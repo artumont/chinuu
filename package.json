@@ -1,0 +1,8 @@
+{
+  "name": "chinuu",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter desktop dev",
+    "build": "pnpm --filter desktop build"
+  }
+}
