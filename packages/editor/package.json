@@ -1,0 +1,19 @@
+{
+  "name": "@chinuu/editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.0.0",
+    "@replit/codemirror-vim": "^6.2.0",
+    "codemirror": "^6.0.0"
+  },
+  "scripts": {
+    "test:browser": "vite test --open"
+  },
+  "devDependencies": {
+    "vite": "^8.0.16"
+  }
+}

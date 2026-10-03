@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@chinuu/editor — browser test</title>
+    <style>
+      body { margin: 0; font: 14px/1.4 system-ui, sans-serif; }
+      header { padding: 8px 12px; border-bottom: 1px solid #ddd; }
+      #editor { height: calc(100vh - 42px); }
+      #status { color: #777; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>@chinuu/editor</strong>
+      <span id="status">booting…</span>
+    </header>
+    <div id="editor"></div>
+
+    <script type="module">
+      import { initEditor } from "../src/index.ts";
+
+      const status = document.getElementById("status");
+      try {
+        const view = initEditor(
+          document.getElementById("editor"),
+          "# @chinuu/editor\nTry vim motions: i, j, k, :w\n",
+        );
+        view.focus();
+        status.textContent = "CodeMirror 6 + vim bindings ready";
+      } catch (err) {
+        status.textContent = "FAILED: " + (err && err.message ? err.message : err);
+        throw err;
+      }
+    </script>
+  </body>
+</html>
