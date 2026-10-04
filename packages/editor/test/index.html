@@ -3,35 +3,781 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>@chinuu/editor — browser test</title>
+    <title>@chinuu/editor browser test</title>
     <style>
-      body { margin: 0; font: 14px/1.4 system-ui, sans-serif; }
-      header { padding: 8px 12px; border-bottom: 1px solid #ddd; }
-      #editor { height: calc(100vh - 42px); }
-      #status { color: #777; }
+      body {
+        margin: 0;
+        font:
+          14px/1.4 system-ui,
+          sans-serif;
+      }
+      header {
+        padding: 8px 12px;
+        border-bottom: 1px solid #ddd;
+        display: flex;
+        gap: 12px;
+        align-items: baseline;
+        flex-wrap: wrap;
+      }
+      header label {
+        display: flex;
+        gap: 4px;
+        align-items: baseline;
+      }
+      #editor {
+        height: calc(100vh - 46px);
+      }
+      #status {
+        color: #777;
+        font-family: ui-monospace, monospace;
+      }
+      #doc {
+        position: fixed;
+        left: -10000px;
+        top: 0;
+        white-space: pre-wrap;
+      }
+      body[data-theme="Tokyo Night"] header {
+        border-color: #3b4261;
+        color: #c0caf5;
+      }
+      body[data-theme="Tokyo Night"] #status {
+        color: #565f89;
+      }
     </style>
   </head>
   <body>
     <header>
       <strong>@chinuu/editor</strong>
+      <label
+        >theme
+        <select id="theme">
+          <option value="light">Chinuu Light</option>
+          <option value="dark">Chinuu Dark</option>
+          <option value="tokyo">Tokyo Night</option>
+          <option value="storm">Tokyo Night Storm</option>
+          <option value="tokyo-light">Tokyo Night Light</option>
+        </select></label
+      >
+      <label
+        >features
+        <select id="features">
+          <option value="default">all</option>
+          <option value="no-horizontal-rule">all − horizontal-rule</option>
+          <option value="core">markers + block-classes</option>
+          <option value="none">none</option>
+        </select></label
+      >
+      <label
+        >mode
+        <select id="mode">
+          <option value="live">live</option>
+          <option value="reading">reading</option>
+        </select></label
+      >
+      <label
+        >blink
+        <select id="blink">
+          <option value="1">on</option>
+          <option value="0">off</option>
+        </select></label
+      >
       <span id="status">booting…</span>
     </header>
     <div id="editor"></div>
+    <pre id="doc"></pre>
 
     <script type="module">
-      import { initEditor } from "../src/index.ts";
+      import { getCM } from "@replit/codemirror-vim";
+      import {
+        cursorCharLeft,
+        cursorCharRight,
+        cursorLineDown,
+      } from "@codemirror/commands";
+      import {
+        builtinFeatures,
+        chinuuLight,
+        chinuuDark,
+        initEditor,
+        targetOf,
+        tokyoNight,
+        tokyoNightLight,
+        tokyoNightStorm,
+      } from "../src/index.ts";
+
+      // Line numbers matter to the assertions in this file keep in sync.
+      const sample = `# chinuu
+
+A note with **bold**, _italic_, \`inline code\`, and a [link](https://tauri.app).
+
+## Live preview targets
+
+- bullet
+- [ ] unchecked task
+- [x] checked task
+
+\`\`\`ts
+const count: number = 42;
+// a comment about the count
+function label(name: string): string {
+  return "hi " + name;
+}
+\`\`\`
+
+> blockquote
+
+| left | center | right |
+| :--- | :----: | ----: |
+| a    | b      | c     |
+
+---
+
+Setext heading
+==============
+
+    indented code
+
+Inline math $e^{i\\pi} + 1 = 0$ and a wiki link [[another-note]].
+
+$$
+\\int_0^1 x^2 \\, dx = \\frac{1}{3}
+$$
+
+![alt text](./img.png)
+
+[JS](javascript:alert(1))
+![nope](javascript:alert(1))
+[[another-note|An alias]]
+[[  ]]
+`;
+
+      // A rendered `<img>` proves nothing on its own: an `<img>` whose file is
+      // missing is still in the DOM. `naturalWidth` only becomes non-zero once the
+      // bytes decode, so the assertions wait for load or error.
+      //
+      // Deferred because at this point CM6 has built only the rows it has measured,
+      // and this image is far enough down the document to fall outside that first
+      // viewport. Reporting immediately would find no element and look like a bug.
+      setTimeout(() => {
+        Promise.all(
+          [...document.querySelectorAll("img.cm-md-image")].map(
+            async (image) => ({
+              src: image.getAttribute("src"),
+              alt: image.alt,
+              width: await new Promise((resolve) => {
+                if (image.complete) return resolve(image.naturalWidth);
+                image.addEventListener("load", () =>
+                  resolve(image.naturalWidth),
+                );
+                image.addEventListener("error", () => resolve(0));
+              }),
+            }),
+          ),
+        ).then((images) => {
+          document.body.dataset.images = JSON.stringify(images);
+        });
+      }, 300);
+
+      // Display math is supposed to wear the code block's background. Reading the
+      // rule text out of a stylesheet would only prove it was written, not that it
+      // resolves `codeBackground` is a CSS variable, so it can silently produce
+      // nothing. Comparing computed colours proves the variable actually lands.
+      setTimeout(() => {
+        const backgroundOf = (selector) => {
+          const element = document.querySelector(selector);
+          return element ? getComputedStyle(element).backgroundColor : null;
+        };
+        document.body.dataset.mathBackground = JSON.stringify({
+          math: backgroundOf("div.cm-md-math-display"),
+          code: backgroundOf(".cm-md-code"),
+          lines: backgroundOf(".cm-md-math-block"),
+        });
+
+        // Inline math is meant to be indistinguishable from inline code apart from
+        // its contents, so compare the box properties directly rather than trusting
+        // that two hand-written rules still agree.
+        const boxOf = (selector) => {
+          const element = document.querySelector(selector);
+          if (!element) return null;
+          const computed = getComputedStyle(element);
+          return {
+            backgroundColor: computed.backgroundColor,
+            borderWidth: computed.borderTopWidth,
+            borderColor: computed.borderTopColor,
+            borderRadius: computed.borderTopLeftRadius,
+            paddingLeft: computed.paddingLeft,
+          };
+        };
+        document.body.dataset.inlineChips = JSON.stringify({
+          math: boxOf("span.cm-md-math"),
+          code: boxOf(".cm-md-inline-code"),
+        });
+
+        // Geometry for the screenshots: the last inline-math crop was aimed by eye
+        // and landed on the display block instead.
+        const rectOf = (selector) => {
+          const element = document.querySelector(selector);
+          if (!element) return null;
+          const { top, left, height, width } = element.getBoundingClientRect();
+          return {
+            top: Math.round(top),
+            left: Math.round(left),
+            height: Math.round(height),
+            width: Math.round(width),
+          };
+        };
+        document.body.dataset.chipRects = JSON.stringify({
+          math: rectOf("span.cm-md-math"),
+          code: rectOf(".cm-md-inline-code"),
+        });
+
+        // Reading mode must not *look* editable either. Recording computed values,
+        // since the rules target a dependency's markup and a future version of the
+        // table library could rename it without anything here failing to build.
+        const tableHandle = document.querySelector(".tbl-handle");
+        const checkbox = document.querySelector(".cm-md-task-checkbox");
+        document.body.dataset.editChrome = JSON.stringify({
+          tableHandle: tableHandle ? getComputedStyle(tableHandle).display : null,
+          checkbox: checkbox ? getComputedStyle(checkbox).pointerEvents : null,
+        });
+
+        // The status-bar hook under test. `vimModes` is what the callback received.
+        // `vimStateMode` is vim's own mode read straight from the compatibility object,
+        // which is what tells us whether an initial report is being missed.
+        document.body.dataset.vimModes = JSON.stringify(vimModes);
+        document.body.dataset.vimStateMode = JSON.stringify({
+          mode: getCM(handle.view)?.state?.vim?.mode,
+          insertMode: getCM(handle.view)?.state?.vim?.insertMode,
+        });
+
+        // Wiki links: what the anchors ended up pointing at, and what they display.
+        document.body.dataset.wikiLinks = JSON.stringify(
+          [...document.querySelectorAll("a.cm-md-wiki-link")].map((anchor) => ({
+            href: anchor.getAttribute("href"),
+            text: anchor.textContent,
+          })),
+        );
+      }, 300);
+
+      const allFeatures = Object.values(builtinFeatures);
+      const FEATURE_SETS = {
+        default: allFeatures,
+        "no-horizontal-rule": allFeatures.filter(
+          (f) => f.id !== "horizontal-rule",
+        ),
+        core: [builtinFeatures.markers, builtinFeatures["block-classes"]],
+        none: [],
+      };
+      // `tokyo` is the night variant, the default of the Tokyo Night set.
+      const THEMES = {
+        light: chinuuLight,
+        dark: chinuuDark,
+        tokyo: tokyoNight,
+        storm: tokyoNightStorm,
+        "tokyo-light": tokyoNightLight,
+      };
+      const themeKeyOf = (theme) =>
+        Object.keys(THEMES).find((key) => THEMES[key] === theme) ?? "light";
+
+      const params = new URLSearchParams(location.search);
+      const requestedTheme = params.get("theme");
+      const requestedFeatures = params.get("features");
+      const initialTheme = THEMES[requestedTheme] ?? chinuuLight;
+      const initialFeatures = FEATURE_SETS[requestedFeatures] ?? allFeatures;
+      const MODES = ["live", "reading"];
+      const requestedMode = MODES.includes(params.get("mode"))
+        ? params.get("mode")
+        : null;
+      const initialMode = requestedMode ?? "live";
+      const requestedBlink = params.get("blink");
+      const initialBlink =
+        requestedBlink === null ? true : requestedBlink !== "0";
+
+      // Exercises the documented `menu` option: an app-supplied section built
+      // only from the public API, with no feature object involved.
+      const extraMenu = params.get("custom")
+        ? [
+            {
+              id: "custom",
+              label: "Custom",
+              items: [
+                {
+                  id: "uppercase",
+                  label: "Uppercase",
+                  hint: "ABC",
+                  run: ({ view }) => {
+                    const target = targetOf(view.state);
+                    const upper = view.state
+                      .sliceDoc(target.from, target.to)
+                      .toUpperCase();
+                    view.dispatch({
+                      changes: {
+                        from: target.from,
+                        to: target.to,
+                        insert: upper,
+                      },
+                    });
+                  },
+                },
+              ],
+            },
+          ]
+        : undefined;
 
       const status = document.getElementById("status");
-      try {
-        const view = initEditor(
-          document.getElementById("editor"),
-          "# @chinuu/editor\nTry vim motions: i, j, k, :w\n",
+      const themeSelect = document.getElementById("theme");
+      const featuresSelect = document.getElementById("features");
+      const modeSelect = document.getElementById("mode");
+      const blinkSelect = document.getElementById("blink");
+      window.addEventListener("hashchange", () => {
+        document.body.dataset.openedWiki = location.hash;
+      });
+        
+      // Records every mode the callback receives, so a headless run can assert the
+      // sequence instead of trusting the console.
+      const vimModes = [];
+
+      const handle = initEditor(document.getElementById("editor"), sample, {
+        theme: initialTheme,
+        features: initialFeatures,
+        menu: extraMenu,
+        mode: initialMode,
+        blinkCursor: initialBlink,
+        // A fragment rather than an app scheme: a genuine navigation in a browser, and
+        // it lets a synthetic click prove the anchor really navigates.
+        resolveWikiLink: (target) => `#${encodeURIComponent(target)}`,
+        vimModeCallback: (mode) => {vimModes.push(mode); console.log(mode);},
+        
+      });
+
+      let activeTheme = initialTheme;
+      let activeFeatures = initialFeatures;
+      let activeMode = initialMode;
+
+      const report = () => {
+        const sel = handle.view.state.selection.main;
+        const pos = handle.view.state.doc.lineAt(sel.head);
+        status.textContent =
+          `${handle.getValue().length} chars` +
+          ` · caret ${pos.number}:${sel.head - pos.from}` +
+          ` · ${handle.view.state.doc.lines} lines` +
+          ` · ${activeTheme.name}` +
+          ` · ${activeMode}` +
+          ` · [${activeFeatures.map((f) => f.id).join(",")}]`;
+      };
+
+      const applyTheme = (theme) => {
+        handle.setTheme(theme);
+        activeTheme = theme;
+        document.body.style.background = theme.background;
+        document.body.dataset.theme = theme.name;
+        themeSelect.value = themeKeyOf(theme);
+      };
+
+      const applyFeatures = (features) => {
+        handle.setFeatures(features);
+        activeFeatures = features;
+      };
+
+      const applyMode = (mode) => {
+        handle.setMode(mode);
+        activeMode = mode;
+        modeSelect.value = mode;
+      };
+
+      const applyBlink = (enabled) => {
+        handle.setCursorBlink(enabled);
+        blinkSelect.value = enabled ? "1" : "0";
+      };
+
+      themeSelect.addEventListener("change", () => {
+        applyTheme(THEMES[themeSelect.value] ?? chinuuLight);
+        report();
+      });
+      featuresSelect.addEventListener("change", () => {
+        applyFeatures(FEATURE_SETS[featuresSelect.value] ?? allFeatures);
+        report();
+      });
+      modeSelect.addEventListener("change", () => {
+        applyMode(modeSelect.value);
+        report();
+      });
+      blinkSelect.addEventListener("change", () => {
+        applyBlink(blinkSelect.value === "1");
+      });
+      handle.view.dom.addEventListener("keyup", report);
+
+      // Dev affordances, so a specific construct can be inspected without
+      // driving keystrokes:
+      //   #12          caret on line 12
+      //   #3:15        caret at line 3, column 15
+      //   #3:12-3:20   a selection, for checking selection colours
+      const doc = handle.view.state.doc;
+      const at = (spec) => {
+        const [linePart, colPart] = spec.split(":");
+        const line = doc.line(
+          Math.min(Math.max(Number(linePart) || 1, 1), doc.lines),
         );
-        view.focus();
-        status.textContent = "CodeMirror 6 + vim bindings ready";
-      } catch (err) {
-        status.textContent = "FAILED: " + (err && err.message ? err.message : err);
-        throw err;
+        const col = Number(colPart);
+        return (
+          line.from +
+          (Number.isInteger(col) ? Math.min(Math.max(col, 0), line.length) : 0)
+        );
+      };
+
+      const hash = location.hash.slice(1);
+      if (hash) {
+        const [from, to] = hash.split("-");
+        const anchor = at(from);
+        handle.view.dispatch({
+          selection: to === undefined ? { anchor } : { anchor, head: at(to) },
+        });
+      }
+
+      applyTheme(initialTheme);
+
+      // Only re-applied when asked for: the default path uses the mode handed to
+      // `initEditor`, so a bug there cannot be masked by a second reconfigure.
+      if (requestedMode) applyMode(requestedMode);
+      if (requestedBlink !== null) applyBlink(requestedBlink !== "0");
+
+      // Dev affordance: `?menu=<id>` opens the menu at the caret and activates
+      // that item. `?menu=open` opens it without activating anything, which is
+      // how the menu itself gets inspected in a headless run there is no mouse
+      // injection available.
+      const menuItem = params.get("menu");
+      const docOut = document.getElementById("doc");
+      const renderDoc = () => {
+        docOut.textContent = handle.getValue();
+      };
+      handle.view.dom.addEventListener("keyup", renderDoc);
+
+      const submenuToOpen = params.get("submenu");
+      if (menuItem || submenuToOpen) {
+        const head = handle.view.state.selection.main.head;
+        const coords = handle.view.coordsAtPos(head);
+        const event = new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: coords?.left ?? 20,
+          clientY: coords?.bottom ?? 20,
+        });
+        handle.view.contentDOM.dispatchEvent(event);
+        // Recorded so the native menu being suppressed can be asserted rather
+        // than assumed.
+        document.body.dataset.menuPrevented = String(event.defaultPrevented);
+        const button = document.querySelector(
+          `.cm-md-menu-item[data-id="${menuItem}"]`,
+        );
+        if (button) {
+          // Submenu items are hidden until their row is opened, so open the row
+          // first otherwise this clicks a hidden element.
+          const panel = button.closest(".cm-md-menu-submenu");
+          const section = panel?.dataset.section;
+          if (section && panel.hidden) {
+            document
+              .querySelector(`.cm-md-menu-row[data-section="${section}"]`)
+              ?.dispatchEvent(
+                new MouseEvent("mousedown", {
+                  bubbles: true,
+                  cancelable: true,
+                }),
+              );
+          }
+          button.dispatchEvent(
+            new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+          );
+        }
+        // `?submenu=format` opens a row's flyout without activating anything,
+        // which is how the submenu gets screenshotted.
+        if (submenuToOpen) {
+          document
+            .querySelector(`.cm-md-menu-row[data-section="${submenuToOpen}"]`)
+            ?.dispatchEvent(
+              new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+            );
+        }
+      }
+
+      renderDoc();
+
+      // Dev affordance: `?walk=down` runs `cursorLineDown` repeatedly and records
+      // which document lines the caret lands on. Lines missing from the list are
+      // the atomic-range bug, measured rather than guessed at.
+      // Dev affordance: `?caret=<line>` puts the caret at the start of a line. The
+      // only way to assert a reveal for a construct the arrow keys cannot reach
+      // predictably, since their column drifts.
+      const caretParam = params.get("caret") ?? "";
+      const [caretLineRaw, caretColumnRaw] = caretParam.split(":");
+      const caretLineNumber = Number(caretLineRaw);
+      if (caretLineNumber > 0) {
+        const line = handle.view.state.doc.line(
+          Math.min(caretLineNumber, handle.view.state.doc.lines),
+        );
+        // `line:col` puts the caret *inside* a construct, which is what a reveal
+        // test needs a bare line number lands on column 0 and reveals nothing.
+        const column = Math.max(
+          0,
+          Math.min(Number(caretColumnRaw ?? 0) || 0, line.length),
+        );
+        handle.view.dispatch({ selection: { anchor: line.from + column } });
+        document.body.dataset.caret = `${line.number}:${column}`;
+      }
+
+      // Dev affordance: `?switchMode=reading` changes mode at runtime, the way the
+      // dropdown does. That is a separate path from handing `mode` to `initEditor`,
+      // so a mode can work at startup and still fail to apply later.
+      const switchMode = params.get("switchMode");
+      if (MODES.includes(switchMode)) {
+        handle.setMode(switchMode);
+        document.body.dataset.switchedMode = switchMode;
+      }
+
+      // Dev affordance: `?tryEdit` dispatches a document change directly and records
+      // whether it landed. Programs, not users, are what get past read-only: the
+      // `readOnly` facet stops commands, while `view.dispatch` from an extension
+      // goes straight through which is how a checkbox and a table could still be
+      // edited in reading mode.
+      if (params.get("tryEdit")) {
+        const before = handle.getValue();
+        handle.view.dispatch({ changes: { from: 0, insert: "X" } });
+        const after = handle.getValue();
+        document.body.dataset.editAttempt = JSON.stringify({
+          changed: after !== before,
+          lengthBefore: before.length,
+          lengthAfter: after.length,
+        });
+      }
+
+      // Dev affordance: `?wikiClick` clicks the first rendered wiki link and records
+      // where it went. A synthetic click on a real anchor is the entire mechanism, so
+      // this is the only honest way to test it.
+      if (params.get("wikiClick")) {
+        setTimeout(() => {
+          const anchor = document.querySelector("a.cm-md-wiki-link");
+          if (anchor) anchor.click();
+          document.body.dataset.wikiClick = JSON.stringify({
+            clicked: Boolean(anchor),
+            hash: location.hash,
+          });
+        }, 350);
+      }
+
+      const walk = params.get("walk");
+      if (walk) {
+        const seen = [];
+        for (let step = 0; step < 80; step++) {
+          const head = handle.view.state.selection.main.head;
+          const line = handle.view.state.doc.lineAt(head);
+          const at = `${line.number}:${head - line.from}`;
+          if (seen[seen.length - 1] !== at) seen.push(at);
+          cursorLineDown(handle.view);
+        }
+        document.body.dataset.walk = JSON.stringify(seen);
+      }
+
+      // Dev affordance: `?arrow=right` records the document offsets the caret
+      // visits, one keypress at a time how the reachability of a replaced
+      // range (a checkbox, a pair of `**`) is checked.
+      const arrow = params.get("arrow");
+      if (arrow) {
+        const seen = [];
+        for (let step = 0; step < 40; step++) {
+          seen.push(handle.view.state.selection.main.head);
+          if (arrow === "right") cursorCharRight(handle.view);
+          else cursorCharLeft(handle.view);
+        }
+        document.body.dataset.arrow = JSON.stringify(seen);
+      }
+
+      // Dev affordances for the reveal rules:
+      //   ?insert=1     enter vim insert mode (synthetic `i`)
+      //   ?down=3       move the caret down N lines with cursorLineDown
+      //   ?click=table-render  click the first rendered widget of that class
+      // The class suffix is appended to `cm-md-`.
+      if (params.get("insert")) {
+        for (const type of ["keydown", "keyup"]) {
+          handle.view.contentDOM.dispatchEvent(
+            new KeyboardEvent(type, {
+              key: "i",
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        }
+      }
+      const down = Number(params.get("down"));
+      if (Number.isInteger(down) && down > 0) {
+        for (let step = 0; step < down; step++) cursorLineDown(handle.view);
+      }
+      const clickSuffix = params.get("click");
+      if (clickSuffix) {
+        const el = document.querySelector(`.cm-md-${clickSuffix}`);
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          el.dispatchEvent(
+            new MouseEvent("mousedown", {
+              bubbles: true,
+              cancelable: true,
+              clientX: Math.round(rect.left + 4),
+              clientY: Math.round(rect.top + 4),
+            }),
+          );
+        }
+      }
+      // Recorded so insert-mode detection can be asserted.
+      document.body.dataset.insertMode = String(
+        Boolean(getCM(handle.view)?.state?.vim?.insertMode),
+      );
+
+      // Dev affordance: `?arrowwalk=1` presses ArrowDown instead of
+      // `cursorLineDown`. Vim's insert mode handles the key itself, so its path is
+      // not the same as a command-driven walk.
+      if (params.get("arrowwalk")) {
+        const seen = [];
+        let iterations = 0;
+        // One keypress per animation frame. CM6 defers its DOM writes to a frame,
+        // so a synchronous burst would never let a reveal's new layout land which
+        // made an earlier version of this harness measure a case that cannot happen
+        // for a real user.
+        const step = () => {
+          // Counted separately from `seen`: that array is de-duplicated, so once the
+          // caret stops changing its length never grows and the loop would not end.
+          if (iterations++ > 80) {
+            document.body.dataset.arrowwalk = JSON.stringify(seen);
+            return;
+          }
+          const head = handle.view.state.selection.main.head;
+          const line = handle.view.state.doc.lineAt(head);
+          const at = `${line.number}:${head - line.from}`;
+          if (seen[seen.length - 1] !== at) seen.push(at);
+          handle.view.contentDOM.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "ArrowDown",
+              code: "ArrowDown",
+              keyCode: 40,
+              which: 40,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+          requestAnimationFrame(step);
+        };
+        step();
+      }
+
+      // Dev affordance: `?key=Tab` dispatches one keydown on the content DOM and
+      // records where focus ended up a Tab that is unhandled moves focus out of
+      // the editor, which is what makes the caret vanish.
+      const keyToPress = params.get("key");
+      if (keyToPress) {
+        // Focus first: otherwise the editor was never focused, `activeElement` is
+        // already BODY, and the assertion proves nothing about Tab stealing focus.
+        handle.view.focus();
+        handle.view.contentDOM.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: keyToPress,
+            code: keyToPress,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        const active = document.activeElement;
+        document.body.dataset.activeElement = active
+          ? `${active.tagName}.${active.className}`
+          : "none";
+        renderDoc();
+      }
+
+      // Dev affordance: `?language=<name>` picks a language in the first code
+      // block's picker. A native `<select>` cannot be driven headlessly, so this
+      // sets the value and fires `change` the way a user selection would.
+      const languageChoice = params.get("language");
+      if (languageChoice !== null) {
+        const select = document.querySelector(".cm-md-code-language");
+        if (select) {
+          select.value = languageChoice;
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        renderDoc();
+      }
+
+      // Dev affordance: `?task=0` clicks the Nth task checkbox. Pointer injection
+      // is not available in a headless run, so this is how the toggle is driven.
+      const taskIndex = params.get("task");
+      if (taskIndex !== null) {
+        document
+          .querySelectorAll(".cm-md-task-checkbox")
+          [Number(taskIndex)]?.dispatchEvent(
+            new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+          );
+        renderDoc();
+      }
+      // Always recorded, so rendered checkbox states can be asserted.
+      document.body.dataset.taskBoxes = JSON.stringify(
+        [...document.querySelectorAll(".cm-md-task-checkbox")].map(
+          (box) => box.checked,
+        ),
+      );
+
+      // The blink is a CSS animation on the cursor layers, so the *resolved*
+      // animation is the thing to check and there are two layers: CM6's own
+      // caret and vim's block cursor. Read after `focus()` below, because the
+      // rule that applies the animation is scoped to `.cm-focused`.
+      const recordBlink = () => {
+        document.body.dataset.cursorBlink = JSON.stringify(
+          [...handle.view.dom.querySelectorAll(".cm-cursorLayer")].map(
+            (layer) => ({
+              cls: layer.className,
+              name: getComputedStyle(layer).animationName,
+              duration: getComputedStyle(layer).animationDuration,
+              opacity: getComputedStyle(layer).opacity,
+            }),
+          ),
+        );
+      };
+
+      // Exercises the live reconfiguration paths (`setTheme` / `setFeatures`
+      // through their compartments), not just the values handed to `initEditor`.
+      const switchTo = params.get("switch");
+      if (switchTo && THEMES[switchTo]) applyTheme(THEMES[switchTo]);
+      const switchFeatures = params.get("switchFeatures");
+      if (switchFeatures && FEATURE_SETS[switchFeatures]) {
+        applyFeatures(FEATURE_SETS[switchFeatures]);
+      }
+
+      report();
+      handle.view.focus();
+      // Recorded last: the blink only applies while the editor has focus.
+      recordBlink();
+
+      // Snapshot the menu *after* focus so a later hide (a stray scroll, a
+      // refocus) is visible in the dump rather than assumed away.
+      if (menuItem) {
+        const menuEl = document.querySelector(".cm-md-menu");
+        const rect = menuEl.getBoundingClientRect();
+        const cs = getComputedStyle(menuEl);
+        document.body.dataset.menuDebug = JSON.stringify({
+          hidden: menuEl.hidden,
+          display: cs.display,
+          visibility: cs.visibility,
+          position: cs.position,
+          zIndex: cs.zIndex,
+          background: cs.backgroundColor,
+          color: cs.color,
+          items: menuEl.querySelectorAll(".cm-md-menu-item").length,
+          groups: menuEl.querySelectorAll(".cm-md-menu-group").length,
+          collapsedGroups: [
+            ...menuEl.querySelectorAll(".cm-md-menu-group-collapsed"),
+          ].map((g) => g.dataset.group),
+          groupOrder: [...menuEl.querySelectorAll(".cm-md-menu-group")].map(
+            (g) => g.dataset.group,
+          ),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+        });
       }
     </script>
   </body>
