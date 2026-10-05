@@ -22,8 +22,8 @@ pub fn index_directory(directory: PathBuf) -> Result<FsIndex, io::Error> {
     create_index_from_disk(&root_node, &mut flat_index);
 
     Ok(FsIndex {
-        root_node: root_node,
-        flat_index: flat_index,
+        root_node,
+        flat_index,
     })
 }
 
@@ -64,7 +64,7 @@ fn build_tree_from_disk(path: &Path) -> Result<FsNode, io::Error> {
     let name = path
         .file_name()
         .map(|os_str| os_str.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_default();
 
     if path.is_dir() {
         let mut children_nodes = Vec::new();
@@ -75,19 +75,19 @@ fn build_tree_from_disk(path: &Path) -> Result<FsNode, io::Error> {
             children_nodes.push(child_node);
         }
 
-        return Ok(FsNode::Folder {
+        Ok(FsNode::Folder {
             id: metadata.ino().to_string(),
-            name: name,
+            name,
             children: children_nodes,
             size: metadata.size(),
             path: path.to_path_buf(),
-        });
+        })
     } else {
-        return Ok(FsNode::File {
+        Ok(FsNode::File {
             id: metadata.ino().to_string(),
-            name: name,
+            name,
             size: metadata.size(),
             path: path.to_path_buf(),
-        });
+        })
     }
 }
