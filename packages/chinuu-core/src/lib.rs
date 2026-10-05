@@ -1,3 +1,1 @@
-pub fn index_vault() {
-    println!("Test");
-}
+pub mod files;
