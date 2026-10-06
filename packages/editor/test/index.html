@@ -237,7 +237,9 @@ $$
         const tableHandle = document.querySelector(".tbl-handle");
         const checkbox = document.querySelector(".cm-md-task-checkbox");
         document.body.dataset.editChrome = JSON.stringify({
-          tableHandle: tableHandle ? getComputedStyle(tableHandle).display : null,
+          tableHandle: tableHandle
+            ? getComputedStyle(tableHandle).display
+            : null,
           checkbox: checkbox ? getComputedStyle(checkbox).pointerEvents : null,
         });
 
@@ -332,7 +334,7 @@ $$
       window.addEventListener("hashchange", () => {
         document.body.dataset.openedWiki = location.hash;
       });
-        
+
       // Records every mode the callback receives, so a headless run can assert the
       // sequence instead of trusting the console.
       const vimModes = [];
@@ -346,8 +348,10 @@ $$
         // A fragment rather than an app scheme: a genuine navigation in a browser, and
         // it lets a synthetic click prove the anchor really navigates.
         resolveWikiLink: (target) => `#${encodeURIComponent(target)}`,
-        vimModeCallback: (mode) => {vimModes.push(mode); console.log(mode);},
-        
+        vimModeCallback: (mode) => {
+          vimModes.push(mode);
+          console.log(mode);
+        },
       });
 
       let activeTheme = initialTheme;

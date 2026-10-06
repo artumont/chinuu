@@ -231,10 +231,10 @@ export const initEditor = (
   // Only normal and insert are reachable here, since visual and replace both need a
   // keystroke, so they always arrive through the event instead.
   const vimAtStart = cm?.state?.vim as
-    | { mode?: string; insertMode?: boolean }
-    | undefined;
+    { mode?: string; insertMode?: boolean } | undefined;
   if (vimAtStart) {
-    const mode = vimAtStart.mode ?? (vimAtStart.insertMode ? "insert" : "normal");
+    const mode =
+      vimAtStart.mode ?? (vimAtStart.insertMode ? "insert" : "normal");
     onVimModeChange({ mode });
   }
 
