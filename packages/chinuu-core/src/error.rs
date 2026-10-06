@@ -58,6 +58,10 @@ pub enum CoreError {
     /// The operation needs a worktree, but the repository is bare.
     #[error("`{}` is a bare repository and has no worktree", .0.display())]
     BareRepository(PathBuf),
+
+    /// A filesystem watch could not be established.
+    #[error("watch error: {0}")]
+    Watch(#[from] notify::Error),
 }
 
 impl CoreError {
