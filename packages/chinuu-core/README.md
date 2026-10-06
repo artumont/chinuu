@@ -1,7 +1,10 @@
 # Chinuu-Core
 
-The Rust side of chinuu: the vault on disk, addressed by stable ids, plus the
-git operations that sync it.
+The Rust side of chinuu: the vault on disk, addressed by stable ids, the git
+operations that sync it, and the watcher that reports changes to it.
+
+No actual application logic should live here, it should be only internal modules that
+then are used in typescript to invoke actual application behaviour
 
 ```rust
 use chinuu_core::files::{index_directory, read_file, write_file};
@@ -35,6 +38,8 @@ fn show(vault: &str) -> Result<()> {
 | `files::index_directory` | `(impl AsRef<Path>) -> Result<FsIndex>` | Index any directory as a vault root. |
 | `files::read_file` | `(impl AsRef<Path>) -> Result<String>` | Read a file as UTF-8 text. |
 | `files::write_file` | `(impl AsRef<Path>, &str) -> Result<()>` | Write text, creating missing parent directories. |
+| `files::delete_file` | `(impl AsRef<Path>) -> Result<()>` | Delete one file, or unlink one symbolic link. |
+| `files::delete_folder` | `(impl AsRef<Path>) -> Result<()>` | Delete a folder and everything inside it. Recursive, destructive, no undo. |
 | `files::FsNode` | enum | One file or folder. |
 | `files::FsIndex` | struct | `root_node` plus a flat `id -> node` map. |
 | `files::ROOT_ID` | `&str` | The root node's id, which is the empty string. |
@@ -56,6 +61,24 @@ accessors over matching, since they work for both variants:
 
 `FsIndex` exposes `get(id) -> Option<&FsNode>`, `len()` and `is_empty()`. Both
 fields are public, so you can also reach `root_node` and `flat_index` directly.
+
+### Deleting
+
+`delete_file` removes one file. `delete_folder` removes a folder and everything
+inside it, which is destructive and has no undo, so a caller that can still be
+talked out of it should confirm with the user first.
+
+Neither follows a symbolic link. `delete_file` unlinks a link and leaves its
+target alone, whether that target is a file or a directory. `delete_folder`
+refuses a link outright with `NotADirectory`, and a link inside the folder being
+removed is unlinked rather than followed. Both type checks use
+`fs::symlink_metadata` rather than `fs::metadata`, so a link to a directory is
+never mistaken for a directory. That is what stops "delete this folder" from
+reaching a folder outside the vault.
+
+Both report a missing path as an error rather than succeeding quietly, so a typo
+cannot pass for a completed delete. A caller that would rather treat an already
+missing path as success can match on the error and decide.
 
 ## Ids are vault-relative paths
 
@@ -199,6 +222,68 @@ ahead and behind are right without an immediate fetch.
 **`log` is topological, newest first.** A pure time sort is not topological, so
 with equal timestamps libgit2 can emit a parent before its child.
 
+## Watch
+
+`files::VaultWatcher` watches a vault and delivers debounced batches of changes.
+That is what keeps a tree UI live without polling.
+
+```rust
+use chinuu_core::files::{VaultWatcher, WatchUpdate};
+use chinuu_core::Result;
+
+fn watch(vault: &str) -> Result<VaultWatcher> {
+    VaultWatcher::start(vault, move |update| match update {
+        WatchUpdate::Changed(events) => {
+            for event in events {
+                // Ids are the same shape as FsNode ids, so the UI can patch
+                // its tree directly instead of reindexing the vault.
+                println!("{} {}", event.kind.as_str(), event.id);
+            }
+        }
+        WatchUpdate::Failed(failure) => eprintln!("watch failed: {failure}"),
+    })
+}
+```
+
+### Types
+
+| Type | Shape |
+| ---- | ----- |
+| `VaultWatcher` | A running watch. Dropping it stops watching. |
+| `WatchOptions` | `debounce`, `recursive`, `ignore`. Builders: `with_debounce`, `ignoring`, `shallow`. |
+| `WatchEvent` | `id`, `kind`, `from_id` (set only for a rename). |
+| `WatchEventKind` | `Created`, `Modified`, `Removed`, `Renamed`. `as_str()` gives a lowercase name. |
+| `WatchUpdate` | `Changed(Vec<WatchEvent>)` or `Failed(WatchFailure)`. Helpers `events()`, `failure()`. |
+| `WatchFailure` | `messages`, and a `Display` impl that joins them. |
+| `DEFAULT_DEBOUNCE` | 200 ms. |
+
+### Things worth knowing
+
+**The callback runs on the watcher's own thread.** It must not block, and it is
+not the UI thread. In a Tauri app, call `AppHandle::emit` from inside it.
+
+**The debounce is a quiet period.** Delivery waits for the filesystem to go
+quiet, so a long sequence of writes arrives as one batch rather than a flicker of
+partial states. Continuous writes keep pushing delivery back, which is the point.
+
+**A batch holds one entry per id, sorted by id.** Saving a new file emits a
+create and then a data change; that folds into a single `Created`, because a new
+path is what the UI has to act on.
+
+**`.git` is ignored by default.** Our own git operations churn it, so watching it
+would feed our changes straight back to us. `WatchOptions::ignoring` adds more.
+
+**A newly created directory is scanned once.** A recursive watch only starts
+covering a directory after the kernel reports it, so a directory created and then
+filled immediately can lose the events for its contents. That is the normal shape
+of unpacking a folder of notes, or of a checkout landing a tree, so the watcher
+walks the new directory and reports what it finds. Without this, a pulled folder
+arrives half populated.
+
+**A folder rename changes every id underneath it.** Ids are paths, so the whole
+subtree moves. The rename event carries `from_id`, and that is what a UI should
+rebase on rather than waiting for events for every child.
+
 ## Errors
 
 Every public function returns `Result<_, CoreError>`. Nothing in the crate
@@ -208,8 +293,8 @@ panics on bad input or on a failed syscall.
 | ------- | ------- | ----------- |
 | `Io { path, source }` | `io error on \`{path}\`: {source}` | A syscall failed and the path is known. |
 | `IoPlain(io::Error)` | transparent | A syscall failed and there is no path to attach. Also the `#[from]` target, so `?` works on a raw io error. |
-| `NotAFile(PathBuf)` | `path is not a file: {path}` | `read_file` on a directory, or `write_file` targeting one. |
-| `NotADirectory(PathBuf)` | `path is not a directory: {path}` | `index_directory` on a file or a missing path. |
+| `NotAFile(PathBuf)` | `path is not a file: {path}` | `read_file` or `delete_file` on a directory, or `write_file` targeting one. |
+| `NotADirectory(PathBuf)` | `path is not a directory: {path}` | `index_directory` on a file, or `delete_folder` on a file or a symbolic link. |
 | `Git(git2::Error)` | `git: {source}` | Any libgit2 failure, with libgit2's own message. |
 | `MissingIdentity` | `no git identity configured: set user.name and user.email` | Committing with no identity configured. |
 | `UnknownRemote(String)` | `no remote named \`{0}\`` | A remote that does not exist. |
@@ -253,10 +338,25 @@ uses `String::from_utf8_lossy`, so a repository with a non-UTF-8 filename yields
 a lossy id instead of an error. Vault ids being strings is the constraint that
 follows from `FsNode`.
 
+**Renaming a folder does not report its children.** By design: the rename event
+carries `from_id`, and rebasing the subtree from that is cheaper and less racy
+than emitting one event per descendant. A UI that ignores `from_id` will keep a
+stale subtree.
+
+**Only an explicit ignore list is honoured.** There is no `.gitignore` support
+and no vault ignore rules yet, so a large `node_modules` or `.obsidian`
+directory is watched unless it is listed in `WatchOptions::ignore`. This is the
+same open item as the indexer's.
+
+**Watching is per-directory under the hood.** On Linux this is one inotify watch
+descriptor per directory, and a very large vault can exhaust the limit; when that
+happens the failure arrives at runtime as `WatchUpdate::Failed`, not from
+`start`, because it happens long after the watch was established.
+
 ## Testing
 
 ```sh
-cargo test -p chinuu-core        # 44 tests: 2 unit, 11 files, 31 git
+cargo test -p chinuu-core        # 82 tests: 12 unit, 23 files, 31 git, 16 watcher
 cargo clippy -p chinuu-core --all-targets -- -D warnings
 cargo fmt -p chinuu-core --check
 ```
