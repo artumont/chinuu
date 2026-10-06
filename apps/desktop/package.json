@@ -12,8 +12,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
-    "@chinuu/editor": "workspace:*",
-    "@chinuu/preview": "workspace:*"
+    "@chinuu/editor": "workspace:*"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
