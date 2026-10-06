@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use chinuu_core::{
-    files::{delete_file, delete_folder, index_directory, read_file, write_file, FsNode, ROOT_ID},
+    files::{
+        delete_file, delete_folder, index_directory, index_directory_with, read_file, write_file,
+        FsNode, IgnoreRules, IGNORE_FILE_NAME, ROOT_ID,
+    },
     CoreError,
 };
 
@@ -325,5 +328,120 @@ fn delete_folder_does_not_follow_a_symlink_inside_it() {
     assert!(
         outside.join("keep.md").is_file(),
         "a link inside the folder must not take its target with it"
+    );
+}
+
+// ---------------------------------------------------------------- ignore rules
+
+#[test]
+fn ignored_paths_are_absent_from_the_index() {
+    let vault = sample_vault();
+    write_file(vault.path().join(IGNORE_FILE_NAME), "*.tmp\nprivate/\n").unwrap();
+    write_file(vault.path().join("scratch.tmp"), "x\n").unwrap();
+    write_file(vault.path().join("notes/draft.tmp"), "x\n").unwrap();
+    write_file(vault.path().join("private/secret.md"), "x\n").unwrap();
+
+    let index = index_directory(vault.path()).unwrap();
+
+    assert!(index.get("scratch.tmp").is_none());
+    assert!(index.get("notes/draft.tmp").is_none());
+    assert!(
+        index.get("private").is_none(),
+        "the folder itself is hidden"
+    );
+    assert!(index.get("private/secret.md").is_none());
+
+    // Everything else is untouched.
+    assert!(index.get("a.md").is_some());
+    assert!(index.get("notes/b.md").is_some());
+    assert!(index.get("notes/deep/c.md").is_some());
+}
+
+#[test]
+fn git_and_the_ignore_file_are_hidden_by_default() {
+    let vault = sample_vault();
+    write_file(vault.path().join(IGNORE_FILE_NAME), "*.tmp\n").unwrap();
+    std::fs::create_dir_all(vault.path().join(".git")).unwrap();
+    write_file(vault.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+
+    let index = index_directory(vault.path()).unwrap();
+
+    assert!(index.get(".git").is_none());
+    assert!(index.get(".git/HEAD").is_none());
+    assert!(
+        index.get(IGNORE_FILE_NAME).is_none(),
+        "the ignore file is configuration, not a note"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_ignored_directory_is_never_descended_into() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let vault = sample_vault();
+    write_file(vault.path().join(IGNORE_FILE_NAME), "private/\n").unwrap();
+    let private = vault.path().join("private");
+    write_file(private.join("x.md"), "x\n").unwrap();
+
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    // If the mode does not actually stop us, for instance when the suite runs as
+    // root, the test cannot prove anything, so it steps aside rather than
+    // passing for the wrong reason.
+    if std::fs::read_dir(&private).is_ok() {
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let result = index_directory(vault.path());
+
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // A walk that filtered after the fact would try to read this directory and
+    // fail. Pruning means it is never opened at all.
+    assert!(
+        result.is_ok(),
+        "the walk should not have entered the ignored directory: {result:?}"
+    );
+}
+
+#[test]
+fn index_directory_with_uses_exactly_the_given_rules() {
+    let vault = sample_vault();
+    write_file(vault.path().join(IGNORE_FILE_NAME), "private/\n").unwrap();
+    write_file(vault.path().join("private/secret.md"), "x\n").unwrap();
+
+    // The vault's own file is deliberately not consulted here, so neither the
+    // folder it hides nor the built-in patterns apply.
+    let rules = IgnoreRules::parse("*.tmp").unwrap();
+    let index = index_directory_with(vault.path(), &rules).unwrap();
+
+    assert!(index.get(IGNORE_FILE_NAME).is_some());
+    assert!(index.get("private/secret.md").is_some());
+}
+
+#[test]
+fn an_empty_rule_set_hides_nothing() {
+    let vault = sample_vault();
+    std::fs::create_dir_all(vault.path().join(".git")).unwrap();
+    write_file(vault.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+
+    let index = index_directory_with(vault.path(), &IgnoreRules::empty()).unwrap();
+
+    assert!(index.get(".git").is_some());
+    assert!(index.get(".git/HEAD").is_some());
+}
+
+#[test]
+fn a_bad_pattern_in_the_vault_file_is_reported() {
+    let vault = sample_vault();
+    write_file(vault.path().join(IGNORE_FILE_NAME), "[z-a].md\n").unwrap();
+
+    let err = index_directory(vault.path()).unwrap_err();
+
+    assert!(
+        matches!(err, CoreError::InvalidIgnorePattern(_)),
+        "got {err:?}"
     );
 }

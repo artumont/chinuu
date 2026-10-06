@@ -6,7 +6,7 @@ use std::{
 };
 
 use notify::{
-    event::{ModifyKind, RenameMode},
+    event::{CreateKind, ModifyKind, RemoveKind, RenameMode},
     EventKind, RecursiveMode,
 };
 use notify_debouncer_full::{
@@ -15,7 +15,10 @@ use notify_debouncer_full::{
 
 use crate::{
     error::{CoreError, Result},
-    files::types::{id_from_path, join_rel},
+    files::{
+        ignore::IgnoreRules,
+        types::{id_from_path, join_rel},
+    },
 };
 
 /// Default quiet period before a batch is delivered.
@@ -112,12 +115,12 @@ pub struct WatchOptions {
     /// Watch subdirectories too. On by default; a flat vault can turn it off to
     /// save one kernel watch per directory.
     pub recursive: bool,
-    /// Vault-relative ids to ignore, matched on the id itself or as a parent
-    /// directory.
+    /// Rules deciding which vault paths are hidden.
     ///
-    /// Defaults to `.git`, which matters because our own git operations churn
-    /// it and would otherwise feed our changes straight back to us.
-    pub ignore: Vec<String>,
+    /// The same rules the indexer uses, so a path hidden from the tree cannot
+    /// still arrive as an event. Defaults to [`IgnoreRules::defaults`], which
+    /// covers `.git` and the ignore file itself.
+    pub rules: IgnoreRules,
 }
 
 impl Default for WatchOptions {
@@ -125,15 +128,28 @@ impl Default for WatchOptions {
         Self {
             debounce: DEFAULT_DEBOUNCE,
             recursive: true,
-            ignore: vec![".git".to_owned()],
+            rules: IgnoreRules::defaults(),
         }
     }
 }
 
 impl WatchOptions {
-    /// Ignore additional vault-relative ids.
-    pub fn ignoring(mut self, ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.ignore.extend(ids.into_iter().map(Into::into));
+    /// Ignore additional patterns, in gitignore syntax.
+    ///
+    /// An error is returned for a pattern that will not compile, rather than
+    /// dropping it and leaving a caller to wonder why a path still shows up.
+    pub fn ignoring<I, S>(mut self, patterns: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.rules.add_patterns(patterns)?;
+        Ok(self)
+    }
+
+    /// Replace the rules outright, for instance with [`IgnoreRules::for_vault`].
+    pub fn with_rules(mut self, rules: IgnoreRules) -> Self {
+        self.rules = rules;
         self
     }
 
@@ -173,14 +189,30 @@ impl VaultWatcher {
     ///
     /// The callback runs on the watcher's thread, once per quiet period that
     /// saw at least one change.
+    ///
+    /// Honours the vault's own `.chinuuignore` on top of the built-in defaults,
+    /// the same way [`index_directory`] does. Use
+    /// [`VaultWatcher::start_with`] to supply the rules yourself.
+    ///
+    /// [`index_directory`]: crate::files::index_directory
     pub fn start<F>(root: impl AsRef<Path>, callback: F) -> Result<Self>
     where
         F: FnMut(WatchUpdate) + Send + 'static,
     {
-        Self::start_with(root, WatchOptions::default(), callback)
+        let root = root.as_ref();
+
+        // Checked before reading the ignore file, so a file path reports
+        // `NotADirectory` rather than an io error from looking for a file inside
+        // it.
+        if !root.is_dir() {
+            return Err(CoreError::NotADirectory(root.to_path_buf()));
+        }
+
+        let options = WatchOptions::default().with_rules(IgnoreRules::for_vault(root)?);
+        Self::start_with(root, options, callback)
     }
 
-    /// Watch `root` with explicit options.
+    /// Watch `root` with explicit options, using exactly the rules they carry.
     pub fn start_with<F>(
         root: impl AsRef<Path>,
         options: WatchOptions,
@@ -311,13 +343,15 @@ fn coalesce(root: &Path, options: &WatchOptions, events: &[DebouncedEvent]) -> V
     let mut merged: BTreeMap<String, PendingEvent> = BTreeMap::new();
 
     for debounced in events {
-        let Some(kind) = kind_of(debounced.event.kind) else {
+        let event_kind = debounced.event.kind;
+        let Some(kind) = kind_of(event_kind) else {
             continue;
         };
+        let hint = dir_hint(event_kind);
 
         // A correlated rename carries both paths, (from, to) in that order.
         if kind == WatchEventKind::Renamed {
-            let ids = ids_for(root, options, &debounced.event.paths);
+            let ids = ids_for(root, options, &debounced.event.paths, hint);
             if let [from, to] = ids.as_slice() {
                 merged
                     .entry(to.clone())
@@ -325,9 +359,37 @@ fn coalesce(root: &Path, options: &WatchOptions, events: &[DebouncedEvent]) -> V
                     .apply(kind, Some(from.clone()));
                 continue;
             }
+
+            // One half was filtered out, which is the normal shape of an atomic
+            // save: the temporary file is ignored, so the rename has nothing to
+            // pair with. Report only what the half we can see supports, rather
+            // than claiming a rename whose origin the UI never knew about.
+            let to_id = debounced
+                .event
+                .paths
+                .get(1)
+                .and_then(|path| visible_id(root, options, path, hint));
+            let from_id = debounced
+                .event
+                .paths
+                .first()
+                .and_then(|path| visible_id(root, options, path, hint));
+
+            if let Some(id) = to_id {
+                merged
+                    .entry(id)
+                    .or_default()
+                    .apply(WatchEventKind::Created, None);
+            } else if let Some(id) = from_id {
+                merged
+                    .entry(id)
+                    .or_default()
+                    .apply(WatchEventKind::Removed, None);
+            }
+            continue;
         }
 
-        for id in ids_for(root, options, &debounced.event.paths) {
+        for id in ids_for(root, options, &debounced.event.paths, hint) {
             merged.entry(id).or_default().apply(kind, None);
         }
     }
@@ -375,11 +437,14 @@ fn scan_new_directory(
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let child_id = join_rel(id, &name);
-        if is_ignored(options, &child_id) {
+        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+
+        // Checked before the entry is reported, so an ignored directory is never
+        // announced and is never descended into.
+        if options.rules.is_ignored(&child_id, is_dir) {
             continue;
         }
 
-        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
         merged
             .entry(child_id.clone())
             .or_default()
@@ -391,33 +456,68 @@ fn scan_new_directory(
     }
 }
 
+/// Resolve one event path to a visible vault id.
+///
+/// `None` when the path is outside the vault, is the vault root itself, or is
+/// hidden by the ignore rules. `dir_hint` is what the event said the path was,
+/// when it said anything.
+fn visible_id(
+    root: &Path,
+    options: &WatchOptions,
+    path: &Path,
+    dir_hint: Option<bool>,
+) -> Option<String> {
+    let id = id_from_path(root, path)?;
+
+    // An event on the root says nothing that a child event does not, and the
+    // empty id is not a path the UI can act on.
+    if id.is_empty() {
+        return None;
+    }
+
+    // The filesystem answers whether the path is a directory, except for a
+    // removal: the path is already gone there, so only the event knows whether
+    // a `dir/` pattern should have matched it.
+    let is_dir = dir_hint.unwrap_or_else(|| root.join(&id).is_dir());
+    if options.rules.is_ignored(&id, is_dir) {
+        return None;
+    }
+
+    Some(id)
+}
+
 /// Map an event's paths to vault ids, dropping anything filtered out.
-fn ids_for(root: &Path, options: &WatchOptions, paths: &[PathBuf]) -> Vec<String> {
+fn ids_for(
+    root: &Path,
+    options: &WatchOptions,
+    paths: &[PathBuf],
+    dir_hint: Option<bool>,
+) -> Vec<String> {
     let mut ids = Vec::new();
 
     for path in paths {
-        let Some(id) = id_from_path(root, path) else {
-            continue;
-        };
-
-        // An event on the root itself says nothing that a child event does not,
-        // and the empty id is not a path the UI can act on.
-        if id.is_empty() || is_ignored(options, &id) || ids.contains(&id) {
-            continue;
+        if let Some(id) = visible_id(root, options, path, dir_hint) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
         }
-
-        ids.push(id);
     }
 
     ids
 }
 
-/// Whether `id` is one of the ignored ids, or sits underneath one.
-fn is_ignored(options: &WatchOptions, id: &str) -> bool {
-    options.ignore.iter().any(|prefix| {
-        id.strip_prefix(prefix.as_str())
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-    })
+/// Whether an event told us the path is a directory, when it said so.
+///
+/// Notify classifies this only for creations and removals. Everywhere else the
+/// filesystem is asked instead.
+fn dir_hint(kind: EventKind) -> Option<bool> {
+    match kind {
+        EventKind::Create(CreateKind::Folder) => Some(true),
+        EventKind::Create(CreateKind::File) => Some(false),
+        EventKind::Remove(RemoveKind::Folder) => Some(true),
+        EventKind::Remove(RemoveKind::File) => Some(false),
+        _ => None,
+    }
 }
 
 /// Group notify's event kinds into the four things a vault UI acts on.
@@ -456,25 +556,37 @@ mod tests {
         let opts = WatchOptions::default()
             .with_debounce(Duration::from_millis(50))
             .ignoring([".obsidian", "node_modules"])
+            .unwrap()
             .shallow();
 
         assert_eq!(opts.debounce, Duration::from_millis(50));
         assert!(!opts.recursive);
-        assert!(opts.ignore.contains(&".git".to_owned()));
-        assert!(opts.ignore.contains(&".obsidian".to_owned()));
+        assert!(opts.rules.is_ignored(".git", true));
+        assert!(opts.rules.is_ignored(".obsidian", true));
+        assert!(opts.rules.is_ignored("node_modules", true));
     }
 
     #[test]
-    fn ignore_matches_the_id_and_its_children() {
+    fn an_unparsable_pattern_is_refused() {
+        let err = WatchOptions::default().ignoring(["[z-a].md"]).unwrap_err();
+
+        assert!(
+            matches!(err, CoreError::InvalidIgnorePattern(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn default_rules_cover_git_and_its_children() {
         let opts = options();
 
-        assert!(is_ignored(&opts, ".git"));
-        assert!(is_ignored(&opts, ".git/config"));
-        assert!(is_ignored(&opts, ".git/objects/ab/cdef"));
+        assert!(opts.rules.is_ignored(".git", true));
+        assert!(opts.rules.is_ignored(".git/config", false));
+        assert!(opts.rules.is_ignored(".git/objects/ab/cdef", false));
 
-        assert!(!is_ignored(&opts, "notes/.gitignore"));
-        assert!(!is_ignored(&opts, ".github/workflows"));
-        assert!(!is_ignored(&opts, "a.md"));
+        assert!(!opts.rules.is_ignored("notes/.gitignore", false));
+        assert!(!opts.rules.is_ignored(".github/workflows", true));
+        assert!(!opts.rules.is_ignored("a.md", false));
     }
 
     #[test]
@@ -522,6 +634,15 @@ mod tests {
     }
 
     #[test]
+    fn dir_hint_reports_what_the_event_knew() {
+        assert_eq!(dir_hint(EventKind::Create(CreateKind::Folder)), Some(true));
+        assert_eq!(dir_hint(EventKind::Create(CreateKind::File)), Some(false));
+        assert_eq!(dir_hint(EventKind::Remove(RemoveKind::Folder)), Some(true));
+        assert_eq!(dir_hint(EventKind::Remove(RemoveKind::File)), Some(false));
+        assert_eq!(dir_hint(EventKind::Modify(ModifyKind::Any)), None);
+    }
+
+    #[test]
     fn ids_for_skips_the_root_and_ignored_paths() {
         let root = Path::new("/vault");
         let opts = options();
@@ -532,6 +653,103 @@ mod tests {
             PathBuf::from("/elsewhere/outside.md"),
         ];
 
-        assert_eq!(ids_for(root, &opts, &paths), vec!["notes/a.md"]);
+        assert_eq!(ids_for(root, &opts, &paths, None), vec!["notes/a.md"]);
+    }
+
+    #[test]
+    fn a_dir_only_rule_uses_the_hint_when_the_path_is_gone() {
+        let root = Path::new("/vault");
+        let opts = WatchOptions::default().ignoring(["private/"]).unwrap();
+        let gone = vec![PathBuf::from("/vault/private")];
+
+        // The path no longer exists, so only the event's own classification can
+        // tell a `dir/` pattern that this was a directory.
+        assert!(ids_for(root, &opts, &gone, Some(true)).is_empty());
+        assert_eq!(ids_for(root, &opts, &gone, Some(false)), vec!["private"]);
+    }
+
+    /// The event shape an atomic save produces: the temporary file is hidden by
+    /// the default rules, so only the destination survives filtering.
+    fn atomic_save_rename() -> DebouncedEvent {
+        let event = notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path(PathBuf::from("/vault/.chinuu-tmp-1-2-3"))
+            .add_path(PathBuf::from("/vault/notes/a.md"));
+
+        DebouncedEvent::new(event, std::time::Instant::now())
+    }
+
+    #[test]
+    fn an_unpaired_rename_claims_no_origin() {
+        let root = Path::new("/vault");
+        let options = WatchOptions::default();
+
+        let batch = coalesce(root, &options, &[atomic_save_rename()]);
+
+        assert_eq!(batch.len(), 1, "got {batch:?}");
+        assert_eq!(batch[0].id, "notes/a.md");
+        assert_eq!(batch[0].kind, WatchEventKind::Created);
+        assert_eq!(
+            batch[0].from_id, None,
+            "there is no origin the UI could act on"
+        );
+    }
+
+    #[test]
+    fn an_unpaired_rename_into_an_ignored_path_is_a_removal() {
+        let root = Path::new("/vault");
+        let options = WatchOptions::default();
+
+        // Renamed into the ignored directory, so only the source survives.
+        let event = notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path(PathBuf::from("/vault/notes/a.md"))
+            .add_path(PathBuf::from("/vault/.git/a.md"));
+
+        let batch = coalesce(
+            root,
+            &options,
+            &[DebouncedEvent::new(event, std::time::Instant::now())],
+        );
+
+        assert_eq!(batch.len(), 1, "got {batch:?}");
+        assert_eq!(batch[0].id, "notes/a.md");
+        assert_eq!(batch[0].kind, WatchEventKind::Removed);
+    }
+
+    #[test]
+    fn a_paired_rename_keeps_its_origin() {
+        let root = Path::new("/vault");
+        let options = WatchOptions::default();
+
+        let event = notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path(PathBuf::from("/vault/a.md"))
+            .add_path(PathBuf::from("/vault/b.md"));
+
+        let batch = coalesce(
+            root,
+            &options,
+            &[DebouncedEvent::new(event, std::time::Instant::now())],
+        );
+
+        assert_eq!(batch.len(), 1, "got {batch:?}");
+        assert_eq!(batch[0].id, "b.md");
+        assert_eq!(batch[0].kind, WatchEventKind::Renamed);
+        assert_eq!(batch[0].from_id.as_deref(), Some("a.md"));
+    }
+
+    #[test]
+    fn a_temporary_file_alone_produces_nothing() {
+        let root = Path::new("/vault");
+        let options = WatchOptions::default();
+
+        let event = notify::Event::new(EventKind::Create(CreateKind::File))
+            .add_path(PathBuf::from("/vault/.chinuu-tmp-1-2-3"));
+
+        let batch = coalesce(
+            root,
+            &options,
+            &[DebouncedEvent::new(event, std::time::Instant::now())],
+        );
+
+        assert!(batch.is_empty(), "got {batch:?}");
     }
 }

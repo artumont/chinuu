@@ -2,7 +2,10 @@ use std::{collections::HashMap, env, fs, io, path::Path};
 
 use crate::{
     error::{CoreError, Result},
-    files::types::{join_rel, FsIndex, FsNode, ROOT_ID},
+    files::{
+        ignore::IgnoreRules,
+        types::{join_rel, FsIndex, FsNode, ROOT_ID},
+    },
 };
 
 /// Index the current working directory.
@@ -11,15 +14,36 @@ pub fn index_cwd() -> Result<FsIndex> {
     index_directory(current_dir)
 }
 
-/// Index the given directory as a vault root.
+/// Index the given directory as a vault root, honouring its ignore rules.
+///
+/// The rules are the built-in defaults plus the vault's own `.chinuuignore`, so
+/// a vault's configuration applies without the caller having to know about it.
+/// Use [`index_directory_with`] to supply the rules yourself.
 pub fn index_directory(directory: impl AsRef<Path>) -> Result<FsIndex> {
+    let directory = directory.as_ref();
+
+    // Checked before reading the ignore file, so a file path reports
+    // `NotADirectory` rather than an io error from looking for a file inside it.
+    if !directory.is_dir() {
+        return Err(CoreError::NotADirectory(directory.to_path_buf()));
+    }
+
+    let rules = IgnoreRules::for_vault(directory)?;
+    index_directory_with(directory, &rules)
+}
+
+/// Index the given directory using exactly the rules provided.
+///
+/// Nothing is implied: a caller that wants the built-in defaults and the
+/// vault's ignore file should ask for them with [`IgnoreRules::for_vault`].
+pub fn index_directory_with(directory: impl AsRef<Path>, rules: &IgnoreRules) -> Result<FsIndex> {
     let directory = directory.as_ref();
 
     if !directory.is_dir() {
         return Err(CoreError::NotADirectory(directory.to_path_buf()));
     }
 
-    let root_node = build_tree(directory, ROOT_ID)?;
+    let root_node = build_tree(directory, ROOT_ID, rules)?;
     let mut flat_index = HashMap::new();
 
     flatten(&root_node, &mut flat_index);
@@ -44,7 +68,7 @@ fn flatten(node: &FsNode, index: &mut HashMap<String, FsNode>) {
 /// `abs` is the on-disk path, `rel` is the vault-relative id being built for
 /// the same entry. Ids are joined with `/` regardless of platform so a vault
 /// indexed on one OS resolves to the same ids on another.
-fn build_tree(abs: &Path, rel: &str) -> Result<FsNode> {
+fn build_tree(abs: &Path, rel: &str, rules: &IgnoreRules) -> Result<FsNode> {
     let metadata = fs::metadata(abs).map_err(|e| CoreError::io(abs, e))?;
     let name = abs
         .file_name()
@@ -58,7 +82,16 @@ fn build_tree(abs: &Path, rel: &str) -> Result<FsNode> {
             let entry_path = entry.path();
             let child_name = entry.file_name().to_string_lossy().into_owned();
             let child_rel = join_rel(rel, &child_name);
-            children_nodes.push(build_tree(&entry_path, &child_rel)?);
+
+            // Pruned here rather than filtered at the end, because not
+            // descending into an ignored directory is most of the point of
+            // ignoring it. The walk follows symlinks, so the directory test
+            // does too, matching how this function reads the entry itself.
+            if rules.is_ignored(&child_rel, entry_path.is_dir()) {
+                continue;
+            }
+
+            children_nodes.push(build_tree(&entry_path, &child_rel, rules)?);
         }
 
         Ok(FsNode::Folder {

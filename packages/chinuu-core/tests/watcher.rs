@@ -13,7 +13,10 @@ use std::{
 };
 
 use chinuu_core::{
-    files::{VaultWatcher, WatchEvent, WatchEventKind, WatchOptions, WatchUpdate},
+    files::{
+        move_path, write_file, VaultWatcher, WatchEvent, WatchEventKind, WatchOptions, WatchUpdate,
+        TEMP_PREFIX,
+    },
     CoreError,
 };
 
@@ -276,7 +279,10 @@ fn git_is_ignored_by_default() {
 #[test]
 fn a_custom_ignored_directory_is_respected() {
     let dir = tempfile::tempdir().unwrap();
-    let (_watcher, rx) = watch_with(dir.path(), WatchOptions::default().ignoring([".obsidian"]));
+    let (_watcher, rx) = watch_with(
+        dir.path(),
+        WatchOptions::default().ignoring([".obsidian"]).unwrap(),
+    );
 
     fs::create_dir_all(dir.path().join(".obsidian")).unwrap();
     fs::write(dir.path().join(".obsidian/app.json"), "{}\n").unwrap();
@@ -324,4 +330,153 @@ fn a_shallow_watch_still_reports_top_level_paths() {
 
     let events = wait_for(&rx, "a.md", |events| find(events, "a.md").is_some());
     assert_eq!(find(&events, "a.md").unwrap().kind, WatchEventKind::Created);
+}
+
+// ---------------------------------------------------------------- ignore rules
+
+#[test]
+fn a_pattern_from_the_vault_ignore_file_produces_no_event() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".chinuuignore"), "*.tmp\n").unwrap();
+
+    // `start` is the entry point that reads the vault's own ignore file.
+    let (tx, rx) = mpsc::channel();
+    let _watcher = VaultWatcher::start(dir.path(), move |update| {
+        let _ = tx.send(update);
+    })
+    .unwrap();
+
+    fs::write(dir.path().join("scratch.tmp"), "x\n").unwrap();
+
+    expect_no_events(&rx, DEBOUNCE * 8);
+}
+
+#[test]
+fn a_pattern_from_the_options_produces_no_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_watcher, rx) = watch_with(
+        dir.path(),
+        WatchOptions::default().ignoring(["*.log"]).unwrap(),
+    );
+
+    fs::write(dir.path().join("debug.log"), "x\n").unwrap();
+
+    expect_no_events(&rx, DEBOUNCE * 8);
+}
+
+#[test]
+fn a_directory_rule_hides_its_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("build")).unwrap();
+    let (_watcher, rx) = watch_with(
+        dir.path(),
+        WatchOptions::default().ignoring(["build/"]).unwrap(),
+    );
+
+    fs::write(dir.path().join("build/out.md"), "x\n").unwrap();
+
+    expect_no_events(&rx, DEBOUNCE * 8);
+}
+
+#[test]
+fn a_negated_path_still_arrives() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_watcher, rx) = watch_with(
+        dir.path(),
+        WatchOptions::default()
+            .ignoring(["*.tmp", "!keep.tmp"])
+            .unwrap(),
+    );
+
+    // The filter must not be so eager that a re-include is lost.
+    fs::write(dir.path().join("keep.tmp"), "x\n").unwrap();
+
+    let events = wait_for(&rx, "keep.tmp", |events| find(events, "keep.tmp").is_some());
+    assert_eq!(
+        find(&events, "keep.tmp").unwrap().kind,
+        WatchEventKind::Created
+    );
+}
+
+#[test]
+fn a_path_that_is_not_ignored_still_arrives() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_watcher, rx) = watch_with(
+        dir.path(),
+        WatchOptions::default().ignoring(["*.tmp"]).unwrap(),
+    );
+
+    fs::write(dir.path().join("a.md"), "x\n").unwrap();
+
+    let events = wait_for(&rx, "a.md", |events| find(events, "a.md").is_some());
+    assert_eq!(find(&events, "a.md").unwrap().kind, WatchEventKind::Created);
+}
+
+// ------------------------------------------------- writes through the core
+
+#[test]
+fn an_atomic_save_reports_the_note_and_not_the_temporary_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let note = dir.path().join("a.md");
+    // Written before the watch starts, so this is a save rather than a new note.
+    write_file(&note, "# a\n").unwrap();
+    let (_watcher, rx) = watch(dir.path());
+
+    // Goes through a temporary file and a rename, which is what a real save does.
+    write_file(&note, "# a edited\n").unwrap();
+
+    let events = wait_for(&rx, "a.md", |events| find(events, "a.md").is_some());
+
+    assert!(
+        events
+            .iter()
+            .all(|event| !event.id.starts_with(TEMP_PREFIX)),
+        "the temporary file leaked into the events: {events:?}"
+    );
+    // The rename replaced the path and the watcher cannot see that the path
+    // existed before, so it reports the half it can see. A UI that treats
+    // `created` as insert-or-update handles that correctly.
+    let event = find(&events, "a.md").unwrap();
+    assert!(
+        matches!(
+            event.kind,
+            WatchEventKind::Created | WatchEventKind::Modified
+        ),
+        "got {event:?}"
+    );
+}
+
+#[test]
+fn an_atomic_save_of_a_new_note_reports_it_as_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_watcher, rx) = watch(dir.path());
+
+    write_file(dir.path().join("new.md"), "# new\n").unwrap();
+
+    let events = wait_for(&rx, "new.md", |events| find(events, "new.md").is_some());
+    assert_eq!(
+        find(&events, "new.md").unwrap().kind,
+        WatchEventKind::Created
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !event.id.starts_with(TEMP_PREFIX)),
+        "got {events:?}"
+    );
+}
+
+#[test]
+fn renaming_through_the_core_reports_the_new_id() {
+    let dir = tempfile::tempdir().unwrap();
+    write_file(dir.path().join("a.md"), "# a\n").unwrap();
+    let (_watcher, rx) = watch(dir.path());
+
+    move_path(dir.path().join("a.md"), dir.path().join("b.md")).unwrap();
+
+    let events = wait_for(&rx, "b.md", |events| find(events, "b.md").is_some());
+    let event = find(&events, "b.md").unwrap();
+
+    assert_eq!(event.kind, WatchEventKind::Renamed);
+    assert_eq!(event.from_id.as_deref(), Some("a.md"));
 }
