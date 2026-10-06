@@ -8,7 +8,13 @@ use git2::{Config, Cred, CredentialType, RemoteCallbacks};
 /// it tries ssh-agent first, then the configured credential helper, which is
 /// where a stored personal access token usually lives. The user's own git
 /// configuration is therefore honoured rather than duplicated in app settings.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// This type holds credentials, so its `Debug` is written by hand and redacts
+/// the token and the passphrase. A derived implementation would print both in
+/// full, which turns any log line, panic message or failing assertion into a
+/// credential leak. It is also deliberately not serializable, for the same
+/// reason.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub enum Auth {
     /// ssh-agent, then the git credential helper, then whatever libgit2 finds.
     #[default]
@@ -24,6 +30,34 @@ pub enum Auth {
         public_key: Option<PathBuf>,
         passphrase: Option<String>,
     },
+}
+
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Auth::Default => f.write_str("Default"),
+            Auth::SshAgent => f.write_str("SshAgent"),
+            Auth::Token { username, .. } => f
+                .debug_struct("Token")
+                .field("username", username)
+                .field("token", &"<redacted>")
+                .finish(),
+            Auth::SshKey {
+                username,
+                private_key,
+                public_key,
+                passphrase,
+            } => f
+                .debug_struct("SshKey")
+                .field("username", username)
+                .field("private_key", private_key)
+                .field("public_key", public_key)
+                // Whether a passphrase is set stays visible, because that is
+                // what a caller debugging a failed login needs to know.
+                .field("passphrase", &passphrase.as_ref().map(|_| "<redacted>"))
+                .finish(),
+        }
+    }
 }
 
 impl Auth {
@@ -109,4 +143,50 @@ pub(crate) fn remote_callbacks(config: Config, auth: &Auth) -> RemoteCallbacks<'
     });
 
     callbacks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_redacts_a_token() {
+        let auth = Auth::token("ada", "ghp_supersecret_value");
+        let rendered = format!("{auth:?}");
+
+        assert!(
+            !rendered.contains("ghp_supersecret_value"),
+            "leaked: {rendered}"
+        );
+        // The parts needed to debug a failed login are still there.
+        assert!(rendered.contains("ada"), "lost the username: {rendered}");
+        assert!(rendered.contains("redacted"), "got {rendered}");
+    }
+
+    #[test]
+    fn debug_output_redacts_a_passphrase() {
+        let auth = Auth::SshKey {
+            username: "git".to_owned(),
+            private_key: PathBuf::from("/home/me/.ssh/id_ed25519"),
+            public_key: None,
+            passphrase: Some("hunter2".to_owned()),
+        };
+        let rendered = format!("{auth:?}");
+
+        assert!(!rendered.contains("hunter2"), "leaked: {rendered}");
+        assert!(
+            rendered.contains("id_ed25519"),
+            "lost the key path: {rendered}"
+        );
+        assert!(
+            rendered.contains("Some"),
+            "whether a passphrase is set is useful: {rendered}"
+        );
+    }
+
+    #[test]
+    fn debug_output_of_the_simple_variants_is_unchanged() {
+        assert_eq!(format!("{:?}", Auth::Default), "Default");
+        assert_eq!(format!("{:?}", Auth::SshAgent), "SshAgent");
+    }
 }
