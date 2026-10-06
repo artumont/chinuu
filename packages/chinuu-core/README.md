@@ -35,9 +35,14 @@ fn show(vault: &str) -> Result<()> {
 | Item | Signature | What it does |
 | ---- | --------- | ------------ |
 | `files::index_cwd` | `() -> Result<FsIndex>` | Index the process working directory. |
-| `files::index_directory` | `(impl AsRef<Path>) -> Result<FsIndex>` | Index any directory as a vault root. |
-| `files::read_file` | `(impl AsRef<Path>) -> Result<String>` | Read a file as UTF-8 text. |
-| `files::write_file` | `(impl AsRef<Path>, &str) -> Result<()>` | Write text, creating missing parent directories. |
+| `files::index_directory` | `(impl AsRef<Path>) -> Result<FsIndex>` | Index a directory as a vault root, honouring its `.chinuuignore`. |
+| `files::index_directory_with` | `(impl AsRef<Path>, &IgnoreRules) -> Result<FsIndex>` | Index using exactly the rules given. |
+| `files::read_file` | `(impl AsRef<Path>) -> Result<String>` | Read a file as UTF-8 text, exactly as stored. |
+| `files::read_bytes` | `(impl AsRef<Path>) -> Result<Vec<u8>>` | Read a file as raw bytes, for attachments. |
+| `files::write_file` | `(impl AsRef<Path>, &str) -> Result<()>` | Write text atomically, creating missing parent directories. |
+| `files::write_bytes` | `(impl AsRef<Path>, &[u8]) -> Result<()>` | Write bytes atomically. |
+| `files::create_folder` | `(impl AsRef<Path>) -> Result<()>` | Create a folder and any missing parents. |
+| `files::move_path` | `(impl AsRef<Path>, impl AsRef<Path>) -> Result<()>` | Move or rename a file or folder. Refuses an existing destination. |
 | `files::delete_file` | `(impl AsRef<Path>) -> Result<()>` | Delete one file, or unlink one symbolic link. |
 | `files::delete_folder` | `(impl AsRef<Path>) -> Result<()>` | Delete a folder and everything inside it. Recursive, destructive, no undo. |
 | `files::FsNode` | enum | One file or folder. |
@@ -61,6 +66,37 @@ accessors over matching, since they work for both variants:
 
 `FsIndex` exposes `get(id) -> Option<&FsNode>`, `len()` and `is_empty()`. Both
 fields are public, so you can also reach `root_node` and `flat_index` directly.
+
+### Reading and writing
+
+`read_file` and `write_file` are byte transparent between them. Nothing is
+normalised on the way in or out: no newline translation, no trailing newline
+added or removed, and a byte order mark is kept rather than stripped. Reading a
+note and writing it back unchanged leaves the file identical, which is what
+`packages/editor` assumes when it says the text in the editor is the file, byte
+for byte. `tests/editing.rs` pins that across the cases that usually break it,
+including CRLF, a lone carriage return, a byte order mark, an empty file, and an
+internal NUL.
+
+`write_file` and `write_bytes` are atomic. The content goes to a temporary file
+in the same directory, is flushed to disk, and only then is renamed over the
+target, so a reader sees either the whole old file or the whole new one. A crash
+part way through a save cannot leave a truncated note. Three consequences worth
+knowing:
+
+- The temporary file is named with `TEMP_PREFIX` and the default ignore rules
+  cover it, so it never appears in the tree and never arrives as a watch event.
+- A write through a symbolic link follows the link and keeps it, rather than
+  replacing it with an ordinary file.
+- The target's permissions are carried over, so a `0644` note does not become
+  `0600` after a save.
+
+A file that is not valid UTF-8 is `NotUtf8` rather than an io error, so a caller
+can offer to open it another way instead of reporting a failure. `read_bytes`
+reads it regardless.
+
+`move_path` refuses an existing destination instead of overwriting it, and
+`delete_folder` is the only recursive, unrecoverable operation here.
 
 ### Deleting
 
@@ -250,7 +286,7 @@ fn watch(vault: &str) -> Result<VaultWatcher> {
 | Type | Shape |
 | ---- | ----- |
 | `VaultWatcher` | A running watch. Dropping it stops watching. |
-| `WatchOptions` | `debounce`, `recursive`, `ignore`. Builders: `with_debounce`, `ignoring`, `shallow`. |
+| `WatchOptions` | `debounce`, `recursive`, `rules`. Builders: `with_debounce`, `ignoring`, `with_rules`, `shallow`. |
 | `WatchEvent` | `id`, `kind`, `from_id` (set only for a rename). |
 | `WatchEventKind` | `Created`, `Modified`, `Removed`, `Renamed`. `as_str()` gives a lowercase name. |
 | `WatchUpdate` | `Changed(Vec<WatchEvent>)` or `Failed(WatchFailure)`. Helpers `events()`, `failure()`. |
@@ -270,8 +306,10 @@ partial states. Continuous writes keep pushing delivery back, which is the point
 create and then a data change; that folds into a single `Created`, because a new
 path is what the UI has to act on.
 
-**`.git` is ignored by default.** Our own git operations churn it, so watching it
-would feed our changes straight back to us. `WatchOptions::ignoring` adds more.
+**`.git` and `.chinuuignore` are ignored by default.** Our own git operations
+churn `.git`, so watching it would feed our changes straight back to us.
+`WatchOptions::ignoring` adds patterns and `with_rules` replaces the set
+outright; see [Ignore rules](#ignore-rules).
 
 **A newly created directory is scanned once.** A recursive watch only starts
 covering a directory after the kernel reports it, so a directory created and then
@@ -284,6 +322,52 @@ arrives half populated.
 subtree moves. The rename event carries `from_id`, and that is what a UI should
 rebase on rather than waiting for events for every child.
 
+## Ignore rules
+
+A vault hides paths by listing them, one per line, in `.chinuuignore` at its
+root. Indexing and watching share the rules, so a path absent from the tree will
+not arrive as an event either. Both convenience entry points load the file for
+you: `index_directory` and `VaultWatcher::start`.
+
+```text
+# a comment
+*.tmp            # any .tmp file, at any depth
+/scratch.md      # only at the vault root
+private/         # a directory, at any depth
+journal/2024/**  # everything under that folder
+!private/keep.md # re-included; the last matching line wins
+```
+
+Syntax is gitignore's, taken from the `ignore` crate rather than reimplemented,
+so globs, `**`, directory-only patterns and negation behave the way they do in
+every other tool that reads this format.
+
+| Item | Purpose |
+| ---- | ------- |
+| `IGNORE_FILE_NAME` | `.chinuuignore`, the file read from the vault root. |
+| `DEFAULT_PATTERNS` | `.git` and `.chinuuignore`, applied to every vault. |
+| `IgnoreRules` | The compiled rule set. `defaults`, `for_vault`, `parse`, `add_line`, `add_patterns`, `is_ignored`. |
+
+`IgnoreRules::for_vault(root)` is the built-ins plus the vault's file, which is
+what `index_directory` and `VaultWatcher::start` use. `index_directory_with` and
+`WatchOptions::with_rules` take the rules as given, so a caller wanting something
+else builds it: `IgnoreRules::parse("*.tmp")` hides only that, and
+`IgnoreRules::empty()` hides nothing at all.
+
+`is_ignored(id, is_dir)` matches ancestors as well as the path itself, so a
+caller never has to prune a walk by hand: with `private/` ignored,
+`private/keep.md` is ignored too. The `is_dir` argument matters because a
+trailing `/` matches directories only, which is why the watcher reads it from the
+event itself when a removal has already taken the path away.
+
+An unparsable pattern is an error, `InvalidIgnorePattern`, rather than a
+silently dropped line, so a typo cannot quietly un-hide something. `for_vault`
+surfaces the same error for a bad line in the vault's file.
+
+Ignored paths are hidden from indexing and watching, and nothing else. Reading,
+writing and deleting still work on them, so a caller can edit or remove a path it
+cannot see.
+
 ## Errors
 
 Every public function returns `Result<_, CoreError>`. Nothing in the crate
@@ -295,6 +379,8 @@ panics on bad input or on a failed syscall.
 | `IoPlain(io::Error)` | transparent | A syscall failed and there is no path to attach. Also the `#[from]` target, so `?` works on a raw io error. |
 | `NotAFile(PathBuf)` | `path is not a file: {path}` | `read_file` or `delete_file` on a directory, or `write_file` targeting one. |
 | `NotADirectory(PathBuf)` | `path is not a directory: {path}` | `index_directory` on a file, or `delete_folder` on a file or a symbolic link. |
+| `NotUtf8(PathBuf)` | `` `{path}` is not valid UTF-8 `` | `read_file` on a file that is not text. Use `read_bytes`. |
+| `AlreadyExists(PathBuf)` | `` `{path}` already exists `` | `move_path` onto a path that is already there. |
 | `Git(git2::Error)` | `git: {source}` | Any libgit2 failure, with libgit2's own message. |
 | `MissingIdentity` | `no git identity configured: set user.name and user.email` | Committing with no identity configured. |
 | `UnknownRemote(String)` | `no remote named \`{0}\`` | A remote that does not exist. |
@@ -343,10 +429,18 @@ carries `from_id`, and rebasing the subtree from that is cheaper and less racy
 than emitting one event per descendant. A UI that ignores `from_id` will keep a
 stale subtree.
 
-**Only an explicit ignore list is honoured.** There is no `.gitignore` support
-and no vault ignore rules yet, so a large `node_modules` or `.obsidian`
-directory is watched unless it is listed in `WatchOptions::ignore`. This is the
-same open item as the indexer's.
+**An atomic write can leave an orphan temporary file.** If the process is killed
+between creating the temporary file and renaming it, a file named with
+`TEMP_PREFIX` stays in the vault. It is ignored by the default rules, so it never
+shows up in the tree, but nothing collects it either.
+
+**Ignore rules are one file at the vault root.** There is no `.gitignore`
+support and no nested `.chinuuignore`, so a vault cannot vary its rules per
+directory. `IgnoreRules::for_vault` reads the one file and nothing deeper.
+
+**Editing `.chinuuignore` does not reload it.** Rules are read when indexing or
+when a watch is started, and the file is itself ignored, so a change to it takes
+effect on the next index or restart rather than immediately.
 
 **Watching is per-directory under the hood.** On Linux this is one inotify watch
 descriptor per directory, and a very large vault can exhaust the limit; when that
@@ -356,7 +450,7 @@ happens the failure arrives at runtime as `WatchUpdate::Failed`, not from
 ## Testing
 
 ```sh
-cargo test -p chinuu-core        # 82 tests: 12 unit, 23 files, 31 git, 16 watcher
+cargo test -p chinuu-core --features serde   # 163 tests: 49 unit, 19 editing, 29 files, 31 git, 11 serde, 24 watcher
 cargo clippy -p chinuu-core --all-targets -- -D warnings
 cargo fmt -p chinuu-core --check
 ```
