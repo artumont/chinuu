@@ -6,6 +6,12 @@ use crate::{
 };
 
 /// How a path changed, on one side of the index.
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    // Matches `ChangeKind::as_str`.
+    serde(rename_all = "lowercase")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
     Added,
@@ -35,6 +41,7 @@ impl ChangeKind {
 ///
 /// A path can appear on both sides at once, for example a new file that was
 /// staged and then edited again.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileStatus {
     /// Vault-relative path, always `/` separated.
@@ -60,6 +67,7 @@ impl FileStatus {
 }
 
 /// A snapshot of the repository's working state.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoStatus {
     /// Current branch, or `None` when detached or unborn.

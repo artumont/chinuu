@@ -16,6 +16,13 @@ pub const ROOT_ID: &str = "";
 /// `id` is the vault-relative path (see [`ROOT_ID`]). It is stable across
 /// sessions and machines, unlike an inode number, which is reused by the
 /// filesystem and only unique within one mounted device.
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    // Internally tagged, so the frontend reads `{"kind":"file","id":...}`
+    // rather than the default `{"File":{...}}`.
+    serde(tag = "kind", rename_all = "lowercase")
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FsNode {
     File {
@@ -74,6 +81,7 @@ impl FsNode {
 }
 
 /// Result of indexing a vault.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone)]
 pub struct FsIndex {
     pub root_node: FsNode,

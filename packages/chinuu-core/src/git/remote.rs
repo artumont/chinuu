@@ -8,6 +8,7 @@ use crate::{
 };
 
 /// A configured remote.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteInfo {
     pub name: String,
@@ -16,6 +17,7 @@ pub struct RemoteInfo {
 }
 
 /// A local branch.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchInfo {
     pub name: String,
@@ -27,6 +29,11 @@ pub struct BranchInfo {
 }
 
 /// What a pull actually did.
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PullOutcome {
     /// Remote and local were already identical.
@@ -40,6 +47,11 @@ pub enum PullOutcome {
 }
 
 /// What a push actually did.
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushOutcome {
     /// The remote already had the commits.

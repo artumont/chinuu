@@ -25,6 +25,13 @@ use crate::{
 pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// What happened to a path inside the vault.
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    // Matches `WatchEventKind::as_str`, so the string a frontend compares
+    // against is the same one the Rust side reports.
+    serde(rename_all = "lowercase")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchEventKind {
     Created,
@@ -52,6 +59,7 @@ impl WatchEventKind {
 /// `/` separated, so it matches what the index and the git layer use.
 ///
 /// [`FsNode`]: crate::files::FsNode
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchEvent {
     /// Vault-relative id of the path that changed.
@@ -66,6 +74,7 @@ pub struct WatchEvent {
 /// This is the "your tree is now stale" signal. Notify reports problems such as
 /// exhausted watch descriptors here because they happen long after the watch was
 /// established, so they cannot be returned from [`VaultWatcher::start`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchFailure {
     pub messages: Vec<String>,
@@ -78,6 +87,13 @@ impl std::fmt::Display for WatchFailure {
 }
 
 /// One delivery to the watcher callback.
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    // Adjacently tagged: `{"kind":"changed","data":[...]}`. An internally
+    // tagged enum cannot hold a newtype variant like `Changed(Vec<_>)`.
+    serde(tag = "kind", content = "data", rename_all = "lowercase")
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchUpdate {
     /// The listed paths changed. Never empty, and never contains two entries

@@ -7,6 +7,7 @@ use crate::{
 };
 
 /// One unresolved conflict in the index.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
     /// Vault-relative path, always `/` separated.

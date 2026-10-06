@@ -8,6 +8,7 @@ use crate::{
 };
 
 /// One entry from the commit log.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitInfo {
     /// Full hex object id.
