@@ -2,3 +2,14 @@
 name = "chinuu-core"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+# git2's default feature set is empty, so https and ssh must be requested
+# explicitly. Both bring in the `cred` feature, which gates the credential
+# helpers used by git/auth.rs. System openssl and libssh2 are used here; add
+# "vendored-openssl" when building somewhere without dev headers.
+git2 = { version = "0.21.0", features = ["https", "ssh"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
