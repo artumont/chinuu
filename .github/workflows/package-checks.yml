@@ -1,0 +1,110 @@
+# Checks the packages on a pull request.
+#
+# Two jobs, split by toolchain rather than by package, so a failure points at one
+# thing. `rust` covers the cargo workspace, `web` covers the TypeScript packages.
+# Neither builds a release or bundles anything: `check`, `clippy` and `test` are
+# what catch a break, and they run in a fraction of the time.
+name: package checks
+
+on:
+  pull_request:
+  push:
+    # The long lived branches, so a merge is checked as well as a pull request.
+    branches: [dev, stable]
+  workflow_dispatch:
+
+# A newer push to the same branch makes the previous run obsolete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rust (fmt, clippy, test, doc)
+    runs-on: ubuntu-latest
+    # libgit2 and libssh2 are compiled from source on a cold cache, so this is
+    # generous rather than tight.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # git2 builds libgit2 and libssh2 from source, so a C compiler,
+      # pkg-config and the openssl headers are needed. The rest is Tauri's Linux
+      # prerequisite list, needed because the workspace includes the desktop
+      # crate: cargo has to at least type check it.
+      - name: install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential pkg-config cmake libssl-dev zlib1g-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      # --locked fails when Cargo.toml and Cargo.lock disagree, which is worth
+      # catching here rather than in somebody's editor.
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      # --all-features is what runs the serde suite, which is compiled out
+      # otherwise.
+      - name: cargo test
+        run: cargo test --workspace --all-features --locked
+
+      # A broken intra doc link does not fail a build, so it is turned into a
+      # failure here.
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --all-features --locked
+
+  web:
+    name: web (lint, types, format)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version is pinned here because package.json has no packageManager
+      # field. Adding one would be the tidier fix.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: eslint
+        run: pnpm --filter @chinuu/editor lint
+
+      - name: tsc
+        run: pnpm --filter @chinuu/editor typecheck
+
+      # The editor package only carries a writing `format` script, so the check
+      # is spelled out rather than named.
+      - name: prettier
+        run: pnpm --filter @chinuu/editor exec prettier --check .
+
+      # Runs tsc over the app and then vite, which is the only step that proves
+      # its imports actually resolve.
+      - name: build the desktop frontend
+        run: pnpm --filter desktop build
