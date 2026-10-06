@@ -2,12 +2,25 @@
 name = "chinuu-core"
 version = "0.1.0"
 edition = "2021"
+description = "Vault indexing, file operations, filesystem watching and git for chinuu"
+# Set by `ignore`, which declares 1.88. Stated here so a consumer on an older
+# toolchain gets a clear message instead of an opaque resolution failure.
+rust-version = "1.88"
+
+[features]
+## Adds `serde::Serialize` to the public data types, so they can cross an IPC
+## boundary such as Tauri's. Off by default, so a consumer that never serializes
+## pays nothing. `Auth` is deliberately excluded from it: it holds credentials.
+serde = ["dep:serde"]
 
 [dependencies]
 git2 = { version = "0.21.0", features = ["https", "ssh"] }
+ignore = "0.4.33"
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
+serde = { version = "1", features = ["derive"], optional = true }
 thiserror = "2"
 
 [dev-dependencies]
+serde_json = "1"
 tempfile = "3"
