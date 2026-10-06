@@ -2,7 +2,7 @@ use std::{collections::HashMap, env, fs, io, path::Path};
 
 use crate::{
     error::{CoreError, Result},
-    files::types::{FsIndex, FsNode, ROOT_ID},
+    files::types::{join_rel, FsIndex, FsNode, ROOT_ID},
 };
 
 /// Index the current working directory.
@@ -75,15 +75,6 @@ fn build_tree(abs: &Path, rel: &str) -> Result<FsNode> {
             size: metadata.len(),
             path: abs.to_path_buf(),
         })
-    }
-}
-
-/// Join a vault-relative parent id with a child name using `/`.
-fn join_rel(parent: &str, name: &str) -> String {
-    if parent.is_empty() {
-        name.to_owned()
-    } else {
-        format!("{parent}/{name}")
     }
 }
 

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Component, Path, PathBuf},
+};
 
 /// Identifier of the vault root node.
 ///
@@ -96,5 +99,77 @@ impl FsIndex {
 
     pub fn is_empty(&self) -> bool {
         self.flat_index.is_empty()
+    }
+}
+
+/// Join a vault-relative parent id with a child name, using `/`.
+///
+/// The single authority for building ids, shared by the indexer and the watcher
+/// so the two cannot drift apart.
+pub(crate) fn join_rel(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+/// The vault id for an absolute path inside the vault.
+///
+/// Returns `None` when `path` is outside `root`, and `Some(ROOT_ID)` when it is
+/// the root itself. Separators are normalised to `/`, matching [`join_rel`], so
+/// an id produced here is the same as one produced by the indexer.
+pub(crate) fn id_from_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut id = String::new();
+
+    for component in relative.components() {
+        if let Component::Normal(part) = component {
+            if !id.is_empty() {
+                id.push('/');
+            }
+            id.push_str(&part.to_string_lossy());
+        }
+    }
+
+    Some(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn id_from_path_is_relative_and_uses_forward_slashes() {
+        let root = Path::new("/vault");
+
+        assert_eq!(id_from_path(root, Path::new("/vault")).as_deref(), Some(""));
+        assert_eq!(
+            id_from_path(root, Path::new("/vault/a.md")).as_deref(),
+            Some("a.md")
+        );
+        assert_eq!(
+            id_from_path(root, Path::new("/vault/notes/deep/b.md")).as_deref(),
+            Some("notes/deep/b.md")
+        );
+    }
+
+    #[test]
+    fn id_from_path_rejects_paths_outside_the_root() {
+        let root = Path::new("/vault");
+
+        assert_eq!(id_from_path(root, Path::new("/elsewhere/a.md")), None);
+        // A sibling whose name merely starts with the root's name is outside.
+        assert_eq!(id_from_path(root, Path::new("/vault-other/a.md")), None);
+    }
+
+    #[test]
+    fn id_from_path_agrees_with_join_rel() {
+        let root = Path::new("/vault");
+
+        let joined = join_rel(&join_rel(ROOT_ID, "notes"), "b.md");
+        let from_path = id_from_path(root, Path::new("/vault/notes/b.md")).unwrap();
+
+        assert_eq!(joined, from_path);
     }
 }
