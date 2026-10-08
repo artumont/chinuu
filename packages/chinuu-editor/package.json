@@ -24,7 +24,7 @@
   "scripts": {
     "lint": "eslint .",
     "format": "prettier --write .",
-    "test:browser": "vite test --open",
+    "test:browser": "vite tests --open",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

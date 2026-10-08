@@ -472,5 +472,5 @@ An earlier link renderer that did it the other way, with a click handler and a
 pnpm format           # prettier format
 pnpm lint             # eslint, including the type-aware rules
 pnpm typecheck        # tsc --noEmit
-pnpm test:browser     # vite dev server over test/index.html
+pnpm test:browser     # vite dev server over tests/index.html
 ```
