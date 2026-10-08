@@ -3,8 +3,8 @@
 The Rust side of chinuu: the vault on disk, addressed by stable ids, the git
 operations that sync it, and the watcher that reports changes to it.
 
-No actual application logic should live here, it should be only internal modules that
-then are used in typescript to invoke actual application behaviour
+No actual application logic should live here, it should be only system 
+interaction and internal logic
 
 ```rust
 use chinuu_core::files::{index_directory, read_file, write_file};
