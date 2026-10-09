@@ -4,7 +4,7 @@ use std::{collections::HashMap, path::Path};
 pub enum FsNode {
     File {
         id: String,
-        size: i64,              // Size of the file used to allocate buffers
+        size: u64,              // Size of the file used to allocate buffers
         name: String,           // The file name without the file type
         path: impl AsRef<Path>, // Relative to Index root
         file_type: String,      // The type of the determined file (.*)
