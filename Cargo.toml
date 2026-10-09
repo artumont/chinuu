@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "apps/desktop/src-tauri",
-    "packages/chinuu-core"
+  # "apps/desktop/src-tauri",
+  "packages/chinuu-core",
 ]
 
 resolver = "2"
