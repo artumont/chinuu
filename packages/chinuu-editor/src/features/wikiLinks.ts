@@ -8,7 +8,7 @@ import type {
 import { CLASS } from "../classes.ts";
 import { markClass } from "../livePreview/decorations.ts";
 import type { DecorationRule } from "../livePreview/types.ts";
-import { hasControlChars, schemeOf } from "./media.ts";
+import { isSafeResolvedHref } from "./media.ts";
 import type { EditorFeature } from "./types.ts";
 
 const WIKI_LINK = "WikiLink";
@@ -70,6 +70,10 @@ const wikiLinkParserExtension: MarkdownConfig = {
  * own the host is the only thing that knows how a note maps onto a route or an
  * app scheme. With no resolver the anchor is inert but still styled, because
  * guessing a path would be worse than doing nothing.
+ *
+ * Distinct from `WikiLinkOpener`: a resolver says what the link *is*, an opener
+ * says what a press *does*. A host that navigates in-app passes the opener and
+ * can skip the resolver entirely.
  */
 export type WikiLinkResolver = (target: string) => string;
 
@@ -80,29 +84,21 @@ export const wikiLinkResolver = Facet.define<
   combine: (values) => values[0] ?? null,
 });
 
-/** Schemes a resolved `href` may carry. A relative one is fine: the host made it. */
-const SAFE_SCHEMES = new Set([
-  "http:",
-  "https:",
-  "mailto:",
-  "chinuu:",
-  "asset:",
-  "file:",
-]);
-
 /**
- * Guards against a hostile *target* steering a trusted resolver into something
- * dangerous. The resolver is the app's own code, but its input is document text, so
- * a note could contain `[[javascript:...]]` and get back a live `href`.
+ * Called when a wiki link is pressed, in place of navigating.
+ *
+ * A plain `<a href>` makes the webview navigate, and under Tauri that replaces the
+ * running application. A host that opens notes itself passes this and the editor
+ * cancels the press, so the app decides what `[[another-note]]` opens.
  */
-const isSafeHref = (href: string): boolean => {
-  const trimmed = href.trim();
-  if (trimmed.length === 0) return false;
-  if (hasControlChars(trimmed)) return false;
+export type WikiLinkOpener = (target: string) => void;
 
-  const scheme = schemeOf(trimmed);
-  return scheme === null || SAFE_SCHEMES.has(scheme);
-};
+export const wikiLinkOpener = Facet.define<
+  WikiLinkOpener,
+  WikiLinkOpener | null
+>({
+  combine: (values) => values[0] ?? null,
+});
 
 /** Splits `target|alias` out of the node's source text. */
 const wikiLinkParts = (
@@ -143,10 +139,30 @@ class WikiLinkWidget extends WidgetType {
 
     const resolve = view.state.facet(wikiLinkResolver);
     const href = resolve ? resolve(this.target) : null;
-    if (href && isSafeHref(href)) {
+    if (href && isSafeResolvedHref(href)) {
       anchor.href = href;
       anchor.rel = "noopener noreferrer";
     }
+
+    const open = view.state.facet(wikiLinkOpener);
+    if (open) {
+      const activate = (event: MouseEvent): void => {
+        event.preventDefault();
+        open(this.target);
+      };
+      anchor.addEventListener("click", activate);
+      // Middle-click and ctrl-click dispatch `auxclick`, and would otherwise
+      // start a navigation CM6 never sees.
+      anchor.addEventListener("auxclick", activate);
+    }
+
+    // An anchor without an `href` is neither focusable nor announced as a link,
+    // so an app-owned one states both for itself.
+    if (open && !anchor.hasAttribute("href")) {
+      anchor.tabIndex = 0;
+      anchor.setAttribute("role", "link");
+    }
+
     return anchor;
   }
 }

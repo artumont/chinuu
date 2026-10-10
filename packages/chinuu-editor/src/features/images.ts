@@ -67,6 +67,14 @@ class ImageWidget extends WidgetType {
     const resolve = view.state.facet(imageResolver);
     const image = document.createElement("img");
     image.className = CLASS.image;
+    // Subscribed before `src` is set, so a destination that fails synchronously
+    // still lands in the handler.
+    image.addEventListener("error", () => {
+      image.classList.add(CLASS.imageBroken);
+      // A failed image with no alt renders as nothing at all in some webviews,
+      // so fall back to the destination, which is at least the path to fix.
+      if (!image.alt) image.alt = this.src;
+    });
     image.src = resolve ? resolve(this.src) : this.src;
     image.alt = this.alt;
     // Otherwise a press-and-move starts a native drag of the image.

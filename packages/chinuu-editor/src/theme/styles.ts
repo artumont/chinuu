@@ -289,6 +289,16 @@ export const documentTheme = EditorView.theme({
     cursor: "pointer",
   },
 
+  // A file link with no host capability, kept as markdown source. Coloured and
+  // underlined like the syntax highlight it stands in for, but with the text
+  // cursor: it is not clickable, and a pointer would promise otherwise.
+  [`.${CLASS.linkSource}`]: {
+    color: v("link"),
+    textDecoration: "underline",
+    textUnderlineOffset: "0.15em",
+    cursor: "text",
+  },
+
   // A wiki link, and the `[[…]]` source while it is revealed. Same colour as an
   // external link, because to a reader they are the same thing. The pointer is
   // scoped to the anchor, so the revealed source keeps the normal text cursor.
@@ -307,6 +317,22 @@ export const documentTheme = EditorView.theme({
     height: "auto",
     verticalAlign: "middle",
     borderRadius: "4px",
+  },
+
+  // An image whose destination would not load. The alt text is the browser's own
+  // broken-image rendering; the border and fill turn it from an empty gap into
+  // something that reads as a placeholder, which matters most under Tauri, where
+  // a scope or permission refusal is otherwise indistinguishable from a slow load.
+  [`.${CLASS.imageBroken}`]: {
+    padding: "0.2em 0.4em",
+    border: `1px dashed ${v("mark")}`,
+    borderRadius: "4px",
+    background: v("codeBackground"),
+    color: v("codeForeground"),
+    fontFamily: v("fontMono"),
+    fontSize: "0.9em",
+    minWidth: "1em",
+    minHeight: "1em",
   },
 
   // Rendered inline math. The same chip as inline code, so `$…$` and `` `…` ``

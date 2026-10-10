@@ -18,7 +18,15 @@ import {
 } from "./features/index.ts";
 import type { EditorFeature } from "./features/types.ts";
 import {
+  fileLinkOpener,
+  fileLinkResolver,
+  type FileLinkOpener,
+  type FileLinkResolver,
+} from "./features/links.ts";
+import {
+  wikiLinkOpener,
   wikiLinkResolver,
+  type WikiLinkOpener,
   type WikiLinkResolver,
 } from "./features/wikiLinks.ts";
 import {
@@ -91,9 +99,10 @@ export interface EditorOptions {
    *
    * A note says `![fig](./fig.png)`, and that path is relative to the note rather
    * than to the application, so a webview cannot fetch it unaided. The desktop app
-   * should return a Tauri `asset:` URL here. With nothing supplied the path is used
-   * verbatim, which is right when a server publishes notes and their images from
-   * one directory.
+   * should return a Tauri `asset:` URL here; `tauriImageResolver` builds that
+   * resolver from a host-supplied `convertFileSrc`. With nothing supplied the path
+   * is used verbatim, which is right when a server publishes notes and their
+   * images from one directory.
    */
   readonly resolveImage?: ImageResolver;
   /**
@@ -105,6 +114,34 @@ export interface EditorOptions {
    * renders inert but styled: there is no path to guess.
    */
   readonly resolveWikiLink?: WikiLinkResolver;
+  /**
+   * Called when a wiki link is pressed, instead of letting the webview navigate.
+   *
+   * This is the option a Tauri app wants. A plain `<a href>` makes the webview
+   * navigate, which for a desktop app means leaving the application, so an app
+   * that opens notes itself passes this and the editor cancels the press: a click
+   * and a middle-click both call the callback and nothing navigates.
+   */
+  readonly openWikiLink?: WikiLinkOpener;
+  /**
+   * Maps a file destination written in a note (`[notes](./notes.md)`) onto an
+   * `href`.
+   *
+   * A relative destination means nothing to a webview. Return an `asset:` URL, an
+   * app scheme, or a path; the result is scheme-checked before it is used. On its
+   * own this only fixes the `href`; add `openFileLink` to take the press too.
+   *
+   * Without either option, a file destination keeps rendering as markdown source.
+   */
+  readonly resolveFileLink?: FileLinkResolver;
+  /**
+   * Called when a file link is pressed, instead of letting the webview navigate.
+   *
+   * The host decides what the destination is: open a `.md` note in a tab, hand
+   * anything else to the system opener, and so on. Supplying this is what makes a
+   * file link render as a link at all, since only then does a press have an owner.
+   */
+  readonly openFileLink?: FileLinkOpener;
 }
 
 export interface EditorHandle {
@@ -199,6 +236,16 @@ export const initEditor = (
     ...(options.resolveWikiLink
       ? [wikiLinkResolver.of(options.resolveWikiLink)]
       : []),
+    // A wiki link names a note, pathed or not. The opener is what lets a Tauri app
+    // own the press instead of letting the webview navigate away from the editor.
+    ...(options.openWikiLink ? [wikiLinkOpener.of(options.openWikiLink)] : []),
+    // A file link is a destination the webview cannot resolve on its own, so it
+    // renders only once the host can either say what the `href` is or take the
+    // press. With neither, the markdown stays as source.
+    ...(options.resolveFileLink
+      ? [fileLinkResolver.of(options.resolveFileLink)]
+      : []),
+    ...(options.openFileLink ? [fileLinkOpener.of(options.openFileLink)] : []),
     // Input aids
     ...inputExtensions,
   ];

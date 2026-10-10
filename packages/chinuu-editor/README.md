@@ -56,6 +56,9 @@ initEditor(parent, doc, {
 | `vimModeCallback` | none           | Called on every vim mode change, for a status bar.                     |
 | `resolveImage`    | none           | Turns an image path from the note into something the webview can load. |
 | `resolveWikiLink` | none           | Turns a wiki link target into a URL your app understands.              |
+| `openWikiLink`    | none           | Takes a wiki link press instead of navigating; gets the target.        |
+| `resolveFileLink` | none           | Turns a file destination in a note into an `href`.                     |
+| `openFileLink`    | none           | Takes a file link press instead of navigating; gets the destination.   |
 
 ## The handle
 
@@ -98,25 +101,113 @@ non-interactive. That part is about honesty rather than security: if the filter
 refused the edit but the control still looked clickable, the editor would read as
 broken instead of read-only.
 
-## Images and wiki links
+## Images, wiki links and file links
 
 The package knows nothing about your file system or your note names, so it contains no
-navigation code of its own. Two options exist to cover that gap.
+navigation code of its own. Options exist to cover that gap, and they come in two
+flavours: a **resolver** says what a destination _is_ (its `src` or `href`), and an
+**opener** says what a press _does_. A Tauri app generally wants the openers, because a
+plain `<a href>` makes the webview navigate, and in a desktop app that means leaving the
+application.
 
 **`resolveImage`.** A note says `![fig](./fig.png)`, and that path is relative to the
 _note_, while a webview's origin is the _application_. Return a Tauri `asset:` URL or a
 blob URL. With no resolver the path is used as written, which is correct when a server
 publishes notes and their images from one directory, and wrong everywhere else.
 
-**`resolveWikiLink`.** `[[another-note]]` names a note rather than a location, so only
-your app knows what it should open. Return an href in a scheme you intercept. With no
-resolver the link is styled but inert, because there is no path to guess at.
+A Tauri host does not have to write that resolver itself. `tauriImageResolver` owns the
+composition and keeps `@tauri-apps/api` out of this package by taking `convertFileSrc` as
+a parameter:
 
-Both results are checked before use. `resolveImage` allows a list of schemes and
-refuses everything else. `resolveWikiLink` additionally allows relative hrefs, since
-your own code produced them. The check exists because the resolver is trustworthy but
-its _input_ is document text, so a note containing `[[javascript:...]]` must not be
-able to hand your app a live script URL.
+```ts
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { initEditor, tauriImageResolver } from "@chinuu/editor";
+
+initEditor(parent, markdown, {
+  resolveImage: tauriImageResolver({
+    resolvePath: (src) => `${noteDir}/${src}`, // synchronous; noteDir is already known
+    convertFileSrc,
+    version: (path) => mtimes.get(path), // optional, see below
+  }),
+});
+```
+
+`resolvePath` maps the destination as written onto an absolute path and returns `null`
+when it cannot, which leaves the text as written. It has to be synchronous: a widget
+builds its `src` during a render pass and cannot await, so `@tauri-apps/api/path`'s
+promise-returning `join` is not usable there; resolve the note's directory once when the
+note opens.
+
+`version` covers one Tauri behaviour worth knowing about. The asset protocol caches by
+URL, so replacing a file on disk under the same name keeps serving the old bytes.
+Returning a token that changes with the file (an mtime, a content hash) appends `?v=…`
+and makes the webview re-read it. A destination that already carries a loadable scheme
+(`http:`, `https:`, `data:`, `blob:`, `asset:`) is passed through untouched, so remote
+images keep working.
+
+The Tauri side still needs its own configuration, which a helper cannot supply:
+`app.security.assetProtocol.enable` must be on with a `scope` covering the vault, and an
+enabled CSP needs `asset:` and `http://asset.localhost` in `img-src`, since Windows
+resolves the protocol over HTTP.
+
+An image whose destination fails to load gets the `cm-md-image-broken` class: a dashed
+box in the code colours, with the alt text (or the path, when there is no alt) showing
+where a silent empty gap would otherwise be. That distinction matters under Tauri,
+where a path outside the asset scope is otherwise indistinguishable from a slow load.
+
+**`resolveWikiLink` and `openWikiLink`.** `[[another-note]]` names a note rather than a
+location, so only your app knows what it should open. `resolveWikiLink` gives the anchor
+an `href`; `openWikiLink` takes the press instead of letting the webview navigate. With
+neither the link is styled but inert, because there is no path to guess at; with only the
+opener it is styled _and_ clickable, with no `href` to copy.
+
+```ts
+initEditor(parent, markdown, {
+  openWikiLink: (target) => openNote(target),
+});
+```
+
+The editor cancels the press before calling the opener, for `click` and `auxclick` alike,
+so a middle-click cannot start a navigation behind the callback's back. When the anchor
+ends up without an `href` (an opener but no resolver) it is given `role="link"` and a
+tab stop by hand, because an anchor without an `href` is otherwise neither focusable nor
+announced as a link.
+
+**`resolveFileLink` and `openFileLink`.** A normal markdown link to a file,
+`[notes](./notes.md)`, names something a webview cannot resolve either. `resolveFileLink`
+turns the destination into an `href`; `openFileLink` takes the press. A Tauri app
+usually wants both, because the two answers differ: the `href` wants something copyable
+and hoverable, while the press wants to open a note in a tab or hand a PDF to the system
+opener.
+
+```ts
+import { openPath } from "@tauri-apps/plugin-opener";
+import { initEditor } from "@chinuu/editor";
+
+initEditor(parent, markdown, {
+  resolveFileLink: (url) => `asset://localhost/${join(noteDir, url)}`,
+  openFileLink: (url) => {
+    if (looksLikeNote(url)) openNote(url);
+    else void openPath(join(noteDir, url));
+  },
+});
+```
+
+A file destination is a relative path, or an explicit `file:` URL. It renders as a link
+only once the host can answer for it: with neither option the markdown source
+(`[notes](./notes.md)`) stays visible and editable, exactly as before, and a press still
+moves the caret in so the text can be changed. A destination the browser opens itself
+(`http:`, `https:`, `mailto:`, `tel:`) never reaches the host and behaves as it always
+has, `target="_blank"` and all. Anything else (`javascript:`, `data:`, an unknown
+scheme) stays source text.
+
+Resolver results are checked before use in both cases. `resolveImage` allows a list of
+schemes and refuses everything else. The href resolvers (`resolveWikiLink`,
+`resolveFileLink`) additionally allow relative hrefs, since your own code produced them,
+plus app schemes like `chinuu:`. The check exists because the resolver is trustworthy
+but its _input_ is document text, so a note containing `[[javascript:...]]` or
+`[x](javascript:...)` must not be able to hand your app a live script URL. The openers
+receive that same document text, so they are host code and carry the host's own trust.
 
 ## Theming
 

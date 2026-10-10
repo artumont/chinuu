@@ -52,3 +52,30 @@ export const schemeOf = (url: string): string | null => {
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/; // eslint-disable-line no-control-regex
 export const hasControlChars = (url: string): boolean =>
   CONTROL_CHARS.test(url);
+
+/**
+ * Schemes a *host-resolved* `href` may carry.
+ *
+ * Unlike a destination written in a note, this URL came from the app's own code,
+ * so a relative one is fine and an app's own scheme is expected. The check still
+ * exists because the resolver's *input* is document text: a note containing
+ * `[[javascript:...]]` or `[x](javascript:...)` must not be able to steer a
+ * trusted resolver into handing back a live script URL.
+ */
+const RESOLVED_SCHEMES = new Set([
+  "http:",
+  "https:",
+  "mailto:",
+  "chinuu:",
+  "asset:",
+  "file:",
+]);
+
+export const isSafeResolvedHref = (href: string): boolean => {
+  const trimmed = href.trim();
+  if (trimmed.length === 0) return false;
+  if (hasControlChars(trimmed)) return false;
+
+  const scheme = schemeOf(trimmed);
+  return scheme === null || RESOLVED_SCHEMES.has(scheme);
+};

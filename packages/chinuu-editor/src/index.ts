@@ -11,7 +11,19 @@ export type { EditorHandle, EditorOptions } from "./editor.ts";
 export { builtinFeatures, defaultFeatures } from "./features/index.ts";
 export { imageResolver, type ImageResolver } from "./features/images.ts";
 export {
+  tauriImageResolver,
+  type TauriImageResolverOptions,
+} from "./features/tauriImages.ts";
+export {
+  fileLinkOpener,
+  fileLinkResolver,
+  type FileLinkOpener,
+  type FileLinkResolver,
+} from "./features/links.ts";
+export {
+  wikiLinkOpener,
   wikiLinkResolver,
+  type WikiLinkOpener,
   type WikiLinkResolver,
 } from "./features/wikiLinks.ts";
 export type { EditorFeature } from "./features/types.ts";

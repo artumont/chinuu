@@ -20,8 +20,12 @@ export const CLASS = {
   math: "cm-md-math",
   /** The `<a>` standing in for a `Link`. */
   link: "cm-md-link",
+  /** An unresolved file link, kept as markdown source until the host owns it. */
+  linkSource: "cm-md-link-source",
   /** The `<img>` standing in for an `Image`. */
   image: "cm-md-image",
+  /** An image whose destination failed to load, drawn as a placeholder. */
+  imageBroken: "cm-md-image-broken",
   /** The `<a>` standing in for a `[[wiki link]]`, and its revealed source. */
   wikiLink: "cm-md-wiki-link",
   /** Rendered display math (a `$$` block). */
