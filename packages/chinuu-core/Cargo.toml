@@ -2,3 +2,13 @@
 name = "chinuu-core"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+ignore = "0.4.33"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2.0.21"
+uuid = { version = "1.11", features = ["macro-diagnostics", "v5"] }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
