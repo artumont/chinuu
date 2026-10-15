@@ -1,4 +1,7 @@
-use std::{io, path::PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
@@ -25,6 +28,17 @@ pub enum VaultError {
     /// A Path failed to be converted to a relative path.
     #[error("path conversion failed: {0}")]
     FailedPathConversion(String),
+
+    /// A node id was not found.
+    #[error("node id does not exist: {0}")]
+    NodeIdDoesNotExist(String),
+
+    /// A prefix stripping error.
+    #[error("unable to strip prefix: {prefix} from {source_path}")]
+    StripPrefixError {
+        prefix: PathBuf,
+        source_path: PathBuf,
+    },
 }
 
 impl VaultError {
@@ -36,6 +50,8 @@ impl VaultError {
             VaultError::NotAFile(_) => "not-a-file",
             VaultError::InvalidIgnorePattern(_) => "invalid-ignore-pattern",
             VaultError::FailedPathConversion(_) => "failed-path-conversion",
+            VaultError::NodeIdDoesNotExist(_) => "node-id-does-not-exist",
+            VaultError::StripPrefixError { .. } => "strip-prefix-error",
         }
     }
 
@@ -44,6 +60,14 @@ impl VaultError {
         VaultError::Io {
             path: path.into(),
             source,
+        }
+    }
+
+    /// Create a strip-prefix-error.
+    pub fn strip_prefix(prefix: impl AsRef<Path>, source: impl AsRef<Path>) -> Self {
+        VaultError::StripPrefixError {
+            prefix: prefix.as_ref().to_path_buf(),
+            source_path: source.as_ref().to_path_buf(),
         }
     }
 }
