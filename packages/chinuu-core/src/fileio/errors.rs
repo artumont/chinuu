@@ -4,7 +4,7 @@ use std::{
 };
 
 #[derive(Debug, thiserror::Error)]
-pub enum VaultError {
+pub enum ChinuuFileIoError {
     /// A filesystem operation failed against a specific path.
     #[error("io error on `{}`: {source}", path.display())]
     Io {
@@ -41,23 +41,23 @@ pub enum VaultError {
     },
 }
 
-impl VaultError {
+impl ChinuuFileIoError {
     /// Convert a VaultError to a string.
     pub fn to_str(&self) -> &'static str {
         match self {
-            VaultError::Io { .. } => "io",
-            VaultError::NotADirectory(_) => "not-a-directory",
-            VaultError::NotAFile(_) => "not-a-file",
-            VaultError::InvalidIgnorePattern(_) => "invalid-ignore-pattern",
-            VaultError::FailedPathConversion(_) => "failed-path-conversion",
-            VaultError::NodeIdDoesNotExist(_) => "node-id-does-not-exist",
-            VaultError::StripPrefixError { .. } => "strip-prefix-error",
+            ChinuuFileIoError::Io { .. } => "io",
+            ChinuuFileIoError::NotADirectory(_) => "not-a-directory",
+            ChinuuFileIoError::NotAFile(_) => "not-a-file",
+            ChinuuFileIoError::InvalidIgnorePattern(_) => "invalid-ignore-pattern",
+            ChinuuFileIoError::FailedPathConversion(_) => "failed-path-conversion",
+            ChinuuFileIoError::NodeIdDoesNotExist(_) => "node-id-does-not-exist",
+            ChinuuFileIoError::StripPrefixError { .. } => "strip-prefix-error",
         }
     }
 
     /// Attach a path to a raw io error.
     pub fn io(path: impl Into<PathBuf>, source: io::Error) -> Self {
-        VaultError::Io {
+        ChinuuFileIoError::Io {
             path: path.into(),
             source,
         }
@@ -65,7 +65,7 @@ impl VaultError {
 
     /// Create a strip-prefix-error.
     pub fn strip_prefix(prefix: impl AsRef<Path>, source: impl AsRef<Path>) -> Self {
-        VaultError::StripPrefixError {
+        ChinuuFileIoError::StripPrefixError {
             prefix: prefix.as_ref().to_path_buf(),
             source_path: source.as_ref().to_path_buf(),
         }
