@@ -7,19 +7,19 @@ pub struct Vault {
 }
 
 impl Vault {
-    fn open(_path: impl AsRef<Path>) -> Result<Self, io::Error> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, io::Error> {
         todo!()
     }
 
-    fn read_file(_id: String) -> Result<(), io::Error> {
+    pub fn read_file(id: String) -> Result<(), io::Error> {
         todo!()
     }
 
-    fn create_file(_path: impl AsRef<Path>) -> Result<(), io::Error> {
+    pub fn create_file(path: impl AsRef<Path>) -> Result<(), io::Error> {
         todo!()
     }
 
-    fn delete_file(_id: String) -> Result<(), io::Error> {
+    pub fn delete_file(id: String) -> Result<(), io::Error> {
         todo!()
     }
 }

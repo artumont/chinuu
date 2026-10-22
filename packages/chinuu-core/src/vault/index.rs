@@ -1,14 +1,13 @@
 use std::{
     collections::HashMap,
-    fs::{self, File},
+    fs::{self},
     io,
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
 use uuid::Uuid;
 
-use crate::vault::{error::VaultError, ignore::IgnoreRules, vault::Vault};
+use crate::vault::{error::VaultError, ignore::IgnoreRules};
 
 const UUID_NAMESPACE: Uuid = Uuid::NAMESPACE_DNS;
 
@@ -35,13 +34,14 @@ pub struct FsIndex {
 }
 
 impl FsNode {
-    /// Get current node id.
+    /// Get the node id.
     pub fn id(&self) -> &str {
         match self {
             FsNode::File { id, .. } | FsNode::Folder { id, .. } => id,
         }
     }
 
+    /// Get the node path.
     pub fn path(&self) -> PathBuf {
         match self {
             FsNode::File { path, .. } | FsNode::Folder { path, .. } => path.clone(),
@@ -70,6 +70,7 @@ impl FsNode {
         Ok(())
     }
 
+    /// Create a new file and file node.
     pub fn new_file(root: impl AsRef<Path>, path: impl AsRef<Path>) -> Result<Self, VaultError> {
         let root_ref = root.as_ref();
         let path_ref = path.as_ref();
